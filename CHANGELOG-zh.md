@@ -5,6 +5,13 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.41.2] - 2026-10-14
+
+### Hope Skills Manager
+
+- 换牌为 Hope Skills Manager:应用窗口/网页标题、关于页、登录页全新品牌;GitHub 与问题反馈入口指向内部仓库,移除外部官网入口。
+- 「检查更新」改查内部发布渠道。 productName 保持不变,安装路径与更新器身份不受影响。
+
 ## [1.41.1] - 2026-10-14
 
 ### Fork 内部版本
