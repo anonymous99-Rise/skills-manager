@@ -370,6 +370,7 @@ async fn gitea_callback(
         .post(format!("{}/login/oauth/access_token", auth.gitea_url))
         .header("Accept", "application/json")
         .form(&[
+            ("grant_type", "authorization_code"),
             ("client_id", auth.client_id.as_str()),
             ("client_secret", auth.client_secret.as_str()),
             ("code", code.as_str()),
