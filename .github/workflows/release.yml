@@ -152,6 +152,23 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Fail fast when the tag and the app version drift apart: tauri-action
+      # resolves its release tag from tauri.conf.json's version, so a tag like
+      # v1.41.1 built from a 1.41.0 conf silently uploads everything onto the
+      # OLD version's draft release (seen in practice). 20 seconds here saves
+      # a 20-minute build.
+      - name: Verify tag matches app version
+        shell: bash
+        run: |
+          set -euo pipefail
+          conf_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$conf_version" ]; then
+            echo "::error::tag v$tag != tauri.conf.json version $conf_version — bump the version files before tagging."
+            exit 1
+          fi
+          echo "tag v$tag == conf version ✓"
+
       # A missing secret must not silently produce a linker-only signature that
       # fails `codesign --verify` (issue #138) — but unsigned releases are a
       # legitimate choice for forks without an Apple Developer account, so the
