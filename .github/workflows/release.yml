@@ -186,6 +186,17 @@ jobs:
             exit 0
           fi
           echo "MACOS_SIGNING=1" >> "$GITHUB_ENV"
+          # Export the Apple credentials via GITHUB_ENV instead of passing
+          # them inline in the tauri-action step: an env var that is PRESENT
+          # but EMPTY makes the tauri bundler still enter its codesign path
+          # and die on `security import` of a nonexistent certificate. When
+          # MACOS_SIGNING=0 nothing is exported and the bundler skips
+          # signing entirely.
+          echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE" >> "$GITHUB_ENV"
+          echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+          echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY=$APPLE_API_KEY" >> "$GITHUB_ENV"
           KEY_DIR="$RUNNER_TEMP/private_keys"
           KEY_PATH="$KEY_DIR/AuthKey_${APPLE_API_KEY}.p8"
           mkdir -p "$KEY_DIR"
@@ -207,13 +218,11 @@ jobs:
           # notarize them with Apple, so a downloaded build opens without any
           # Gatekeeper prompt. Signing alone is not enough: macOS 10.15+ blocks
           # quarantined apps that carry no notarization ticket.
-          # APPLE_API_KEY_PATH comes from the previous step via $GITHUB_ENV, and is
-          # only set on macOS runners.
-          APPLE_CERTIFICATE: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_API_ISSUER: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_API_ISSUER || '' }}
-          APPLE_API_KEY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_API_KEY || '' }}
+          #
+          # APPLE_* come from the prepare step via $GITHUB_ENV and are only
+          # exported when MACOS_SIGNING=1 — an env var that is present but
+          # EMPTY still makes the tauri bundler attempt codesigning and fail,
+          # so the unsigned path must leave them unset entirely.
         with:
           tagName: v__VERSION__
           releaseName: 'Skills Manager v__VERSION__'
@@ -383,6 +392,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # The draft release is created by whichever tauri-action leg finishes
+          # its uploads first; if that leg failed (or we raced it), create an
+          # empty draft so the CLI asset still lands instead of failing the
+          # whole release on "release not found".
+          gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create "${{ github.ref_name }}" \
+              --repo "${{ github.repository }}" \
+              --draft --title "Skills Manager ${{ github.ref_name }}" --notes ""
           if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
             CLI_PATH="src-tauri/target/${{ matrix.target }}/release/skills-manager-cli.exe"
             CLI_ASSET="skills-manager-cli-${{ matrix.label }}.exe"
