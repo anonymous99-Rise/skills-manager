@@ -3,6 +3,7 @@ mod backup;
 mod core;
 mod invoke;
 mod ops;
+mod tools;
 
 use std::sync::Arc;
 

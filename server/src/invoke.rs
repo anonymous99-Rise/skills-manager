@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::backup;
 use crate::ops;
 use crate::AppState;
+use crate::tools::{tools_apply_project_dir, tools_apply_skills_dir, tools_reset_project_dir, tools_reset_skills_dir};
 
 pub struct ApiError {
     status: StatusCode,
@@ -57,16 +58,11 @@ type ApiResult = Result<Json<Value>, ApiError>;
 
 /// Commands the server answers with an empty result.
 const DESKTOP_ONLY: &[&str] = &[
-    "install_local",
-    "batch_import_folder",
     "scanProjectsCmd",
     "add_project",
     "add_linked_workspace",
     "remove_project",
     "reveal_project_folder",
-    "get_central_repo_path_override",
-    "get_central_repo_pending_path",
-    "set_central_repo_path",
     "open_central_repo_folder",
     "app_exit",
     "hide_to_tray",
@@ -76,14 +72,6 @@ const DESKTOP_ONLY: &[&str] = &[
     "export_logs_zip",
     "check_last_panic",
     "clear_last_panic",
-    "github_backup_connect",
-    "github_device_flow_start",
-    "github_device_flow_poll",
-    "git_backup_clone",
-    "git_backup_reclone",
-    "git_backup_migrate_credentials",
-    "get_source_skill_document",
-    "get_skill_source_diff",
     "get_project_skills",
     "get_project_skill_document",
     "get_project_agent_targets",
@@ -99,9 +87,6 @@ const DESKTOP_ONLY: &[&str] = &[
     "import_global_local_skill_to_center",
     "update_global_local_skill_from_center",
     "delete_global_local_skill",
-    "relink_local_skill_source",
-    "detach_local_skill_source",
-    "reimport_local_skill",
 ];
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -259,6 +244,27 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
         }
 
         // ── Install ──
+        "install_local" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "sourcePath")]
+                source_path: String,
+                #[serde(default)]
+                name: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            ops::install_local_impl(store, &a.source_path, a.name.as_deref())
+                .map(serialize_null)
+        }
+        "batch_import_folder" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "folderPath")]
+                folder_path: String,
+            }
+            let a: A = args_to(args)?;
+            ops::batch_import_folder_impl(store, &a.folder_path).map(serialize)
+        }
         "install_git" => {
             #[derive(Deserialize)]
             struct A {
@@ -407,6 +413,66 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
             ops::batch_update_skills_impl(store, &a.skill_ids, store.proxy_url().as_deref())
                 .map(serialize)
         }
+        "reimport_local_skill" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                #[serde(rename = "approvedRemovals", default)]
+                approved_removals: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            ops::reimport_local_skill_internal(store, &a.skill_id, a.approved_removals.as_deref())
+                .map(serialize)
+        }
+        "relink_local_skill_source" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                #[serde(rename = "sourcePath")]
+                source_path: String,
+                #[serde(rename = "approvedRemovals", default)]
+                approved_removals: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            ops::relink_local_skill_source_impl(
+                store,
+                &a.skill_id,
+                &a.source_path,
+                a.approved_removals.as_deref(),
+            )
+            .map(serialize)
+        }
+        "detach_local_skill_source" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+            }
+            let a: A = args_to(args)?;
+            ops::detach_local_skill_source_impl(store, &a.skill_id).map(serialize)
+        }
+        "get_source_skill_document" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+            }
+            let a: A = args_to(args)?;
+            ops::get_source_skill_document_impl(store, &a.skill_id, store.proxy_url().as_deref())
+                .map(serialize)
+        }
+        "get_skill_source_diff" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+            }
+            let a: A = args_to(args)?;
+            ops::get_skill_source_diff_impl(store, &a.skill_id, store.proxy_url().as_deref())
+                .map(serialize)
+        }
 
         // ── Scan local agent dirs (server-side: /data/<agent>/skills etc.) ──
         "scan_local_skills" => ops::scan_local_skills_impl(store).map(serialize),
@@ -538,18 +604,158 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
             .map(serialize_null)
         }
 
-        // ── Sync / tool toggles (server has no local agent dirs) ──
+        // ── Sync / tool toggles ──
         "get_skill_tool_toggles" => {
-            let _ = args;
-            Ok(serialize(&Vec::<Value>::new()))
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                #[serde(rename = "presetId")]
+                preset_id: String,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::get_skill_tool_toggles_impl(store, &a.skill_id, &a.preset_id)
+                .map(serialize)
         }
         "set_skill_tool_toggle" => {
-            let _ = args;
-            Ok(serialize_null(&null))
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                #[serde(rename = "presetId")]
+                preset_id: String,
+                tool: String,
+                enabled: bool,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::set_skill_tool_toggle_impl(
+                store,
+                &a.skill_id,
+                &a.preset_id,
+                &a.tool,
+                a.enabled,
+            )
+            .map(serialize_null)
         }
-        "sync_skill_to_tool" | "unsync_skill_from_tool" => Err(AppError::invalid_input(
-            "This deployment manages a central library only; deploy targets are desktop-local",
-        )),
+        "sync_skill_to_tool" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                tool: String,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::sync_skill_to_tool_impl(store, &a.skill_id, &a.tool)
+                .map(serialize_null)
+        }
+        "unsync_skill_from_tool" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "skillId")]
+                skill_id: String,
+                tool: String,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::unsync_skill_from_tool_impl(store, &a.skill_id, &a.tool)
+                .map(serialize_null)
+        }
+
+        // ── Tool (agent) management ──
+        "set_tool_enabled" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+                enabled: bool,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::set_tool_enabled_internal(store, &a.key, a.enabled).map(serialize_null)
+        }
+        "set_all_tools_enabled" => {
+            #[derive(Deserialize)]
+            struct A {
+                enabled: bool,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::set_all_tools_enabled_internal(store, a.enabled).map(serialize_null)
+        }
+        "get_tool_order_cmd" => Ok(serialize(&crate::core::tool_service::get_tool_order(store))),
+        "set_tool_order_cmd" => {
+            #[derive(Deserialize)]
+            struct A {
+                order: Vec<String>,
+            }
+            let a: A = args_to(args)?;
+            crate::core::tool_service::set_tool_order(store, &a.order).map(serialize_null)
+        }
+        "set_custom_tool_path" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+                path: String,
+            }
+            let a: A = args_to(args)?;
+            tools_apply_skills_dir(store, &a.key, &a.path).map(serialize_null)
+        }
+        "reset_custom_tool_path" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+            }
+            let a: A = args_to(args)?;
+            tools_reset_skills_dir(store, &a.key).map(serialize_null)
+        }
+        "set_custom_tool_project_path" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+                #[serde(rename = "projectRelativeSkillsDir", default)]
+                project_relative_skills_dir: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            tools_apply_project_dir(
+                store,
+                &a.key,
+                a.project_relative_skills_dir.as_deref(),
+            )
+            .map(serialize_null)
+        }
+        "reset_custom_tool_project_path" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+            }
+            let a: A = args_to(args)?;
+            tools_reset_project_dir(store, &a.key).map(serialize_null)
+        }
+        "add_custom_tool" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+                #[serde(rename = "displayName")]
+                display_name: String,
+                #[serde(rename = "skillsDir")]
+                skills_dir: String,
+                #[serde(rename = "projectRelativeSkillsDir", default)]
+                project_relative_skills_dir: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::add_custom_tool_internal(
+                store,
+                &a.key,
+                &a.display_name,
+                &a.skills_dir,
+                a.project_relative_skills_dir.as_deref(),
+            )
+            .map(serialize_null)
+        }
+        "remove_custom_tool" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+            }
+            let a: A = args_to(args)?;
+            crate::tools::remove_custom_tool_internal(store, &a.key).map(serialize_null)
+        }
 
         // ── Tools / projects (server-local, empty for the web console) ──
         "get_tool_status" => {
@@ -596,11 +802,29 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
         "get_central_repo_path" => Ok(serialize(
             &crate::core::central_repo::base_dir().to_string_lossy().to_string(),
         )),
+        "get_central_repo_path_override" => Ok(serialize(
+            &crate::core::central_repo::configured_base_dir()
+                .map(|p| p.to_string_lossy().to_string()),
+        )),
+        "get_central_repo_pending_path" => Ok(serialize(
+            &crate::core::central_repo::pending_base_dir()
+                .map(|p| p.to_string_lossy().to_string()),
+        )),
+        "set_central_repo_path" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(default)]
+                path: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            crate::core::central_repo::set_base_dir_override(a.path)
+                .map(|resolved| serialize(&resolved.to_string_lossy().to_string()))
+                .map_err(crate::core::error::AppError::io)
+        }
         "get_central_repo_warnings" => {
             Ok(serialize(&crate::core::central_repo::startup_warnings()))
         }
         "log_startup_event" => Ok(serialize_null(&null)),
-        "get_tool_order_cmd" => Ok(serialize(&Vec::<Value>::new())),
 
         // ── App update check ──
         "check_app_update" => check_app_update_impl(store).map(serialize),
@@ -629,6 +853,54 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
 
         // ── Git backup ──
         "git_backup_status" => backup::git_backup_status(store).map(serialize),
+        "github_backup_connect" => {
+            #[derive(Deserialize)]
+            struct A {
+                token: String,
+                #[serde(rename = "repoName")]
+                repo_name: String,
+            }
+            let a: A = args_to(args)?;
+            backup::github_backup_connect_impl(store, &a.token, &a.repo_name).map(serialize)
+        }
+        "github_device_flow_start" => {
+            backup::github_device_flow_start_impl(store).map(serialize)
+        }
+        "github_device_flow_poll" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "deviceCode")]
+                device_code: String,
+                #[serde(rename = "repoName")]
+                repo_name: String,
+            }
+            let a: A = args_to(args)?;
+            backup::github_device_flow_poll_impl(store, &a.device_code, &a.repo_name)
+                .map(serialize)
+        }
+        "git_backup_clone" => {
+            #[derive(Deserialize)]
+            struct A {
+                url: String,
+                #[serde(rename = "setAside", default)]
+                set_aside: Option<Vec<String>>,
+            }
+            let a: A = args_to(args)?;
+            backup::git_backup_clone_impl(store, &a.url, a.set_aside).map(serialize)
+        }
+        "git_backup_reclone" => {
+            #[derive(Deserialize)]
+            struct A {
+                url: String,
+                #[serde(rename = "setAside", default)]
+                set_aside: Option<Vec<String>>,
+            }
+            let a: A = args_to(args)?;
+            backup::git_backup_reclone_impl(store, &a.url, a.set_aside).map(serialize)
+        }
+        "git_backup_migrate_credentials" => {
+            backup::git_backup_migrate_credentials_impl(store).map(serialize)
+        }
         "git_backup_fetch" => backup::git_backup_fetch(store).map(serialize_null),
         "git_backup_init" => backup::git_backup_init(store).map(serialize_null),
         "git_backup_set_remote" => {
@@ -768,25 +1040,51 @@ fn check_app_update_impl(
     let proxy_url = store.proxy_url();
     let client = skillssh_api::build_http_client(proxy_url.as_deref(), 15);
 
-    let resp: serde_json::Value = client
+    // Shared egress IPs (e.g. a clash proxy) routinely blow through the
+    // unauthenticated GitHub API limit. The web frontend tracks its own
+    // deployment anyway — degrade to "no update" like the desktop app's
+    // silent startup check instead of surfacing an error.
+    let fallback = || {
+        log::warn!("check_app_update: upstream check failed; reporting no update");
+        serde_json::json!({
+            "has_update": false,
+            "current_version": env!("CARGO_PKG_VERSION"),
+            "latest_version": "",
+            "release_url": "https://github.com/xingkongliang/skills-manager/releases",
+        })
+    };
+
+    let resp: serde_json::Value = match client
         .get("https://api.github.com/repos/xingkongliang/skills-manager/releases/latest")
         .header("User-Agent", "skills-manager-server")
         .send()
-        .map_err(|e| AppError::network(format!("Network error: {e}")))?
-        .json()
-        .map_err(|e| AppError::network(format!("Failed to parse response: {e}")))?;
+    {
+        Ok(r) => match r.json() {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("check_app_update: parse failed: {e}");
+                return Ok(fallback());
+            }
+        },
+        Err(e) => {
+            log::warn!("check_app_update: network failed: {e}");
+            return Ok(fallback());
+        }
+    };
 
-    let tag = resp["tag_name"]
-        .as_str()
-        .ok_or_else(|| AppError::network("No tag_name in response"))?;
+    let Some(tag) = resp["tag_name"].as_str() else {
+        log::warn!(
+            "check_app_update: unexpected response: {}",
+            serde_json::to_string(&resp).unwrap_or_default()
+        );
+        return Ok(fallback());
+    };
     let latest_version = tag.strip_prefix('v').unwrap_or(tag).to_string();
     let release_url = resp["html_url"]
         .as_str()
         .unwrap_or("https://github.com/xingkongliang/skills-manager/releases")
         .to_string();
 
-    // The web frontend tracks its own deployment; report upstream info without
-    // claiming an update (the server is updated via its own release channel).
     Ok(serde_json::json!({
         "has_update": false,
         "current_version": env!("CARGO_PKG_VERSION"),

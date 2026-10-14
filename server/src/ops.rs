@@ -2205,3 +2205,520 @@ pub fn set_preset_skills_internal(
     )
     .map_err(AppError::db)
 }
+
+// ── Local install / batch import / relink / detach / source compare ──
+
+pub fn install_local_impl(
+    store: &SkillStore,
+    source_path: &str,
+    name: Option<&str>,
+) -> Result<(), AppError> {
+    let path = PathBuf::from(source_path);
+    let metadata = InstallSourceMetadata {
+        source_type: "local".to_string(),
+        source_ref: Some(source_path.to_string()),
+        source_ref_resolved: None,
+        source_subpath: None,
+        source_branch: None,
+        source_revision: None,
+        remote_revision: None,
+        update_status: "local_only".to_string(),
+    };
+    let _lock = RepoLock::acquire_foreground("install local skill").map_err(AppError::db)?;
+    let result = installer::install_from_local(&path, name).map_err(AppError::io)?;
+    let outcome: Result<(String, String), AppError> =
+        store_installed_skill_unlocked(store, &result, &metadata, None)
+            .map(|id| (id, result.name.clone()));
+    log_install_outcome(store, "local", &outcome);
+    outcome.map(|_| ())
+}
+
+#[derive(Debug, Serialize)]
+pub struct BatchImportResult {
+    pub imported: usize,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+}
+
+pub fn batch_import_folder_impl(
+    store: &SkillStore,
+    folder_path: &str,
+) -> Result<BatchImportResult, AppError> {
+    let root = PathBuf::from(folder_path);
+    if !root.is_dir() {
+        return Err(AppError::invalid_input("Selected path is not a directory"));
+    }
+
+    let mut skill_dirs: Vec<PathBuf> = Vec::new();
+    let entries = std::fs::read_dir(&root)?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_valid_skill_dir(&path) {
+            skill_dirs.push(path);
+        }
+    }
+
+    if skill_dirs.is_empty() {
+        return Ok(BatchImportResult { imported: 0, skipped: 0, errors: vec![] });
+    }
+
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut errors = Vec::new();
+
+    for dir in &skill_dirs {
+        let name = skill_metadata::infer_skill_name(dir);
+
+        let prospective_central = central_repo::skills_dir().join(&name);
+        let central_str = prospective_central.to_string_lossy().to_string();
+        if let Ok(Some(_)) = store.get_skill_by_central_path(&central_str) {
+            skipped += 1;
+            continue;
+        }
+
+        let install_result = (|| -> Result<String, AppError> {
+            let _lock =
+                RepoLock::acquire_foreground("batch import skill").map_err(AppError::db)?;
+            let result =
+                installer::install_from_local(dir, Some(&name)).map_err(AppError::io)?;
+            let metadata = InstallSourceMetadata {
+                source_type: "local".to_string(),
+                source_ref: Some(dir.to_string_lossy().to_string()),
+                source_ref_resolved: None,
+                source_subpath: None,
+                source_branch: None,
+                source_revision: None,
+                remote_revision: None,
+                update_status: "local_only".to_string(),
+            };
+            store_installed_skill_unlocked(store, &result, &metadata, None)
+        })();
+
+        match install_result {
+            Ok(_) => imported += 1,
+            Err(e) => errors.push(format!("{}: {}", name, e)),
+        }
+    }
+
+    Ok(BatchImportResult { imported, skipped, errors })
+}
+
+pub fn relink_local_skill_source_impl(
+    store: &SkillStore,
+    skill_id: &str,
+    source_path: &str,
+    approved_removals: Option<&str>,
+) -> Result<ReimportSkillResult, AppError> {
+    let skill = store
+        .get_skill_by_id(skill_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+    if !matches!(skill.source_type.as_str(), "local" | "import") {
+        return Err(AppError::invalid_input(
+            "Only local skills can relink source paths",
+        ));
+    }
+
+    let path = PathBuf::from(source_path);
+    if !path.exists() {
+        return Err(AppError::not_found("Selected source path does not exist"));
+    }
+    if !is_valid_skill_dir(&path) {
+        return Err(AppError::invalid_input(
+            "Selected source path is not a valid skill directory",
+        ));
+    }
+
+    store
+        .update_skill_update_status(skill_id, "updating")
+        .map_err(AppError::db)?;
+
+    let result = (|| -> Result<(Vec<PendingRemoval>, Option<String>), AppError> {
+        let _lock = RepoLock::acquire_foreground("relink local skill").map_err(AppError::db)?;
+        let staged_path = staged_path_for(&skill.central_path);
+        let install_result =
+            installer::install_from_local_to_destination(&path, Some(&skill.name), &staged_path)
+                .inspect_err(|_| {
+                    let _ = remove_path_if_exists(&staged_path);
+                })
+                .map_err(AppError::io)?;
+        let staged_guard = StagedPathGuard::new(&staged_path, true);
+
+        let pending = pending_removals_for(store, &skill, Some(&staged_path))?;
+        let approval = removal_approval_token(source_path, &pending);
+        if !pending.is_empty() && approved_removals != Some(approval.as_str()) {
+            store
+                .update_skill_update_status(&skill.id, &skill.update_status)
+                .map_err(AppError::db)?;
+            return Ok((pending, Some(approval)));
+        }
+
+        swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+        staged_guard.release();
+        store
+            .update_skill_after_reinstall(
+                &skill.id,
+                &skill.name,
+                install_result.description.as_deref(),
+                &skill.source_type,
+                Some(source_path),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&install_result.content_hash),
+                "local_only",
+            )
+            .map_err(AppError::db)?;
+        resync_copy_targets(store, &skill.id)?;
+        sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
+        Ok((Vec::new(), None))
+    })();
+
+    match result {
+        Ok((pending_removals, removal_approval)) => Ok(ReimportSkillResult {
+            skill: managed_skill_by_id(store, skill_id)?,
+            pending_removals,
+            removal_approval,
+        }),
+        Err(e) => {
+            let _ = store.update_skill_check_state(skill_id, None, "error", Some(&e.message));
+            Err(e)
+        }
+    }
+}
+
+pub fn detach_local_skill_source_impl(
+    store: &SkillStore,
+    skill_id: &str,
+) -> Result<ManagedSkillDto, AppError> {
+    let skill = store
+        .get_skill_by_id(skill_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+    if !matches!(skill.source_type.as_str(), "local" | "import") {
+        return Err(AppError::invalid_input(
+            "Only local skills can detach source paths",
+        ));
+    }
+
+    {
+        let _lock = RepoLock::acquire_foreground("detach local skill").map_err(AppError::db)?;
+        store
+            .update_skill_after_reinstall(
+                &skill.id,
+                &skill.name,
+                skill.description.as_deref(),
+                &skill.source_type,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                skill.content_hash.as_deref(),
+                "local_only",
+            )
+            .map_err(AppError::db)?;
+        sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
+    }
+
+    managed_skill_by_id(store, skill_id)
+}
+
+#[derive(Debug, Serialize)]
+pub struct SourceSkillDocumentDto {
+    pub skill_id: String,
+    pub filename: String,
+    pub content: String,
+    pub source_label: String,
+    pub revision: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillSourceDiffEntryDto {
+    pub relative_path: String,
+    pub status: String,
+    pub content_kind: String,
+    pub original_text: Option<String>,
+    pub updated_text: Option<String>,
+    pub executable_before: bool,
+    pub executable_after: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillSourceDiffDto {
+    pub skill_id: String,
+    pub source_label: String,
+    pub revision: String,
+    pub entries: Vec<SkillSourceDiffEntryDto>,
+}
+
+const MAX_DIFF_FILE_BYTES: usize = 256 * 1024;
+
+fn classify_diff_bytes(bytes: Option<Vec<u8>>) -> (&'static str, Option<String>) {
+    match bytes {
+        Some(b) if b.len() > MAX_DIFF_FILE_BYTES => ("too_large", None),
+        Some(b) if b.contains(&0) => ("binary", None),
+        Some(b) => match String::from_utf8(b) {
+            Ok(text) => ("text", Some(text)),
+            Err(_) => ("binary", None),
+        },
+        None => ("binary", None),
+    }
+}
+
+fn build_source_diff_entries(
+    original_dir: &Path,
+    updated_dir: &Path,
+) -> Vec<SkillSourceDiffEntryDto> {
+    use crate::core::content_hash::{self, ContentEntry};
+    use std::collections::BTreeMap;
+
+    let index = |dir: &Path| -> BTreeMap<String, ContentEntry> {
+        content_hash::list_content_files(dir)
+            .into_iter()
+            .map(|e| (e.relative_path.clone(), e))
+            .collect()
+    };
+    let original = index(original_dir);
+    let updated = index(updated_dir);
+
+    let mut keys: Vec<&String> = original.keys().chain(updated.keys()).collect();
+    keys.sort();
+    keys.dedup();
+
+    let mut entries = Vec::new();
+    for key in keys {
+        match (original.get(key), updated.get(key)) {
+            (None, Some(u)) => {
+                let (kind, text) = classify_diff_bytes(std::fs::read(&u.path).ok());
+                entries.push(SkillSourceDiffEntryDto {
+                    relative_path: key.clone(),
+                    status: "added".into(),
+                    content_kind: kind.into(),
+                    original_text: None,
+                    updated_text: text,
+                    executable_before: false,
+                    executable_after: u.is_executable(),
+                });
+            }
+            (Some(o), None) => {
+                let (kind, text) = classify_diff_bytes(std::fs::read(&o.path).ok());
+                entries.push(SkillSourceDiffEntryDto {
+                    relative_path: key.clone(),
+                    status: "removed".into(),
+                    content_kind: kind.into(),
+                    original_text: text,
+                    updated_text: None,
+                    executable_before: o.is_executable(),
+                    executable_after: false,
+                });
+            }
+            (Some(o), Some(u)) => {
+                let o_bytes = std::fs::read(&o.path).ok();
+                let u_bytes = std::fs::read(&u.path).ok();
+                let exec_before = o.is_executable();
+                let exec_after = u.is_executable();
+                let bytes_equal = o_bytes.is_some() && o_bytes == u_bytes;
+
+                if bytes_equal {
+                    if exec_before == exec_after {
+                        continue;
+                    }
+                    entries.push(SkillSourceDiffEntryDto {
+                        relative_path: key.clone(),
+                        status: "modified".into(),
+                        content_kind: "permission_only".into(),
+                        original_text: None,
+                        updated_text: None,
+                        executable_before: exec_before,
+                        executable_after: exec_after,
+                    });
+                    continue;
+                }
+
+                let (o_kind, o_text) = classify_diff_bytes(o_bytes);
+                let (u_kind, u_text) = classify_diff_bytes(u_bytes);
+                let (kind, original_text, updated_text) = if o_kind == "text" && u_kind == "text" {
+                    ("text", o_text, u_text)
+                } else if o_kind == "too_large" || u_kind == "too_large" {
+                    ("too_large", None, None)
+                } else {
+                    ("binary", None, None)
+                };
+                entries.push(SkillSourceDiffEntryDto {
+                    relative_path: key.clone(),
+                    status: "modified".into(),
+                    content_kind: kind.into(),
+                    original_text,
+                    updated_text,
+                    executable_before: exec_before,
+                    executable_after: exec_after,
+                });
+            }
+            (None, None) => {}
+        }
+    }
+
+    entries
+}
+
+pub fn get_source_skill_document_impl(
+    store: &SkillStore,
+    skill_id: &str,
+    proxy_url: Option<&str>,
+) -> Result<SourceSkillDocumentDto, AppError> {
+    let skill = store
+        .get_skill_by_id(skill_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+    if matches!(skill.source_type.as_str(), "local" | "import") {
+        let source_path = skill
+            .source_ref
+            .clone()
+            .ok_or_else(|| {
+                AppError::not_found("Local skill is missing its original source path")
+            })?;
+        let source_dir = PathBuf::from(&source_path);
+        if !source_dir.exists() {
+            return Err(AppError::not_found("Original source path no longer exists"));
+        }
+        let (filename, content) = read_skill_document_from_dir(&source_dir)?;
+        return Ok(SourceSkillDocumentDto {
+            skill_id: skill_id.to_string(),
+            filename,
+            content,
+            source_label: source_label_for_skill(&skill),
+            revision: "workspace".to_string(),
+        });
+    }
+
+    if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
+        return Err(AppError::invalid_input(
+            "Skill does not support source diff preview",
+        ));
+    }
+
+    let git_source = git_source_from_skill(&skill)?;
+    git_fetcher::validate_git_url(&git_source.clone_url).map_err(AppError::git)?;
+    let remote_revision = git_fetcher::resolve_remote_revision(
+        &git_source.clone_url,
+        git_source.branch.as_deref(),
+        proxy_url,
+    )
+    .map_err(AppError::git)?;
+
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
+        &git_source.clone_url,
+        git_source.branch.as_deref(),
+        git_source.subpath.as_deref(),
+        None,
+        proxy_url,
+        None,
+    )
+    .map_err(AppError::classify_git_error)?;
+
+    let result = (|| -> Result<SourceSkillDocumentDto, AppError> {
+        git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
+        let skill_dir = resolve_skill_dir(
+            &temp_dir,
+            git_source.subpath.as_deref(),
+            git_source.locator_skill_id.as_deref(),
+        )?;
+        let (filename, content) = read_skill_document_from_dir(&skill_dir)?;
+
+        Ok(SourceSkillDocumentDto {
+            skill_id: skill_id.to_string(),
+            filename,
+            content,
+            source_label: source_label_for_skill(&skill),
+            revision: remote_revision,
+        })
+    })();
+
+    git_fetcher::cleanup_temp(&temp_dir);
+    result
+}
+
+pub fn get_skill_source_diff_impl(
+    store: &SkillStore,
+    skill_id: &str,
+    proxy_url: Option<&str>,
+) -> Result<SkillSourceDiffDto, AppError> {
+    let skill = store
+        .get_skill_by_id(skill_id)
+        .map_err(AppError::db)?
+        .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+    let central_dir = PathBuf::from(&skill.central_path);
+    let source_label = source_label_for_skill(&skill);
+
+    if matches!(skill.source_type.as_str(), "local" | "import") {
+        let source_path = skill
+            .source_ref
+            .clone()
+            .ok_or_else(|| {
+                AppError::not_found("Local skill is missing its original source path")
+            })?;
+        let source_dir = PathBuf::from(source_path);
+        if !source_dir.exists() {
+            return Err(AppError::not_found("Original source path no longer exists"));
+        }
+        let entries = build_source_diff_entries(&central_dir, &source_dir);
+        return Ok(SkillSourceDiffDto {
+            skill_id: skill_id.to_string(),
+            source_label,
+            revision: "workspace".to_string(),
+            entries,
+        });
+    }
+
+    if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
+        return Err(AppError::invalid_input(
+            "Skill does not support source diff preview",
+        ));
+    }
+
+    let git_source = git_source_from_skill(&skill)?;
+    git_fetcher::validate_git_url(&git_source.clone_url).map_err(AppError::git)?;
+    let remote_revision = git_fetcher::resolve_remote_revision(
+        &git_source.clone_url,
+        git_source.branch.as_deref(),
+        proxy_url,
+    )
+    .map_err(AppError::git)?;
+
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
+        &git_source.clone_url,
+        git_source.branch.as_deref(),
+        git_source.subpath.as_deref(),
+        None,
+        proxy_url,
+        None,
+    )
+    .map_err(AppError::classify_git_error)?;
+
+    let result = (|| -> Result<SkillSourceDiffDto, AppError> {
+        git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
+        let skill_dir = resolve_skill_dir(
+            &temp_dir,
+            git_source.subpath.as_deref(),
+            git_source.locator_skill_id.as_deref(),
+        )?;
+        let entries = build_source_diff_entries(&central_dir, &skill_dir);
+        Ok(SkillSourceDiffDto {
+            skill_id: skill_id.to_string(),
+            source_label,
+            revision: remote_revision,
+            entries,
+        })
+    })();
+
+    git_fetcher::cleanup_temp(&temp_dir);
+    result
+}

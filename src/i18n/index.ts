@@ -44,7 +44,9 @@ function detectLanguage(): SupportedLanguage {
     if (isPrimary(lower, "en")) return "en";
   }
 
-  return "en";
+  // Default to Simplified Chinese: the primary audience of this deployment.
+  // Browser locale detection above still localizes for English browsers.
+  return "zh";
 }
 
 export const i18nReady = (async () => {

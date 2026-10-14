@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
+use anyhow::Context as _;
+
 use crate::core::{
     central_repo, error::AppError, git2_engine, git_backup, git_credentials, git_fetcher,
     skill_metadata, skill_store::SkillStore, sync_metadata,
@@ -422,4 +424,273 @@ pub fn backup_set_device_name(store: &SkillStore, name: &str) -> Result<String, 
         let _ = git_backup::configure_device_identity(&skills_dir, &sanitized);
     }
     Ok(sanitized)
+}
+
+// ── GitHub-guided connect / device flow / clone / migrate (commands/git_backup.rs) ──
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GithubBackupConnectResult {
+    pub url: String,
+    pub login: String,
+    pub repo_created: bool,
+    pub repo_private: bool,
+    pub remote_has_content: bool,
+}
+
+fn connect_with_token(
+    store: &SkillStore,
+    token: &str,
+    repo_name: &str,
+    method: &str,
+) -> Result<GithubBackupConnectResult, AppError> {
+    use crate::core::github_api;
+
+    if token.is_empty() {
+        return Err(AppError::invalid_input("Token is empty"));
+    }
+    if !github_api::is_valid_repo_name(repo_name) {
+        return Err(AppError::invalid_input("Invalid repository name"));
+    }
+
+    let proxy_url = store.proxy_url();
+    let info = github_api::connect_backup_repo(token, repo_name, proxy_url.as_deref())
+        .map_err(AppError::network)?;
+
+    git_credentials::store_credential(
+        "github.com",
+        &git_credentials::RemoteCredential {
+            username: info.login.clone(),
+            password: token.to_string(),
+        },
+    )
+    .map_err(|e| AppError::internal(format!("KEYCHAIN_UNAVAILABLE: {e:#}")))?;
+
+    store
+        .set_setting("git_backup_remote_url", &info.url)
+        .map_err(AppError::db)?;
+    store
+        .set_setting("github_auth_method", method)
+        .map_err(AppError::db)?;
+
+    let remote_has_content =
+        git_backup::remote_has_heads(&info.url).map_err(classify_git_chain)?;
+
+    Ok(GithubBackupConnectResult {
+        url: info.url,
+        login: info.login,
+        repo_created: info.repo_created,
+        repo_private: info.repo_private,
+        remote_has_content,
+    })
+}
+
+pub fn github_backup_connect_impl(
+    store: &SkillStore,
+    token: &str,
+    repo_name: &str,
+) -> Result<GithubBackupConnectResult, AppError> {
+    sync_engine_pref(store);
+    connect_with_token(store, token.trim(), repo_name.trim(), "pat")
+}
+
+pub fn github_device_flow_start_impl(
+    store: &SkillStore,
+) -> Result<crate::core::github_api::DeviceFlowStart, AppError> {
+    let proxy_url = store.proxy_url();
+    crate::core::github_api::device_flow_start(proxy_url.as_deref()).map_err(AppError::network)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GithubDevicePollResult {
+    pub status: String,
+    pub result: Option<GithubBackupConnectResult>,
+}
+
+pub fn github_device_flow_poll_impl(
+    store: &SkillStore,
+    device_code: &str,
+    repo_name: &str,
+) -> Result<GithubDevicePollResult, AppError> {
+    use crate::core::github_api::{self, DevicePollOutcome};
+
+    sync_engine_pref(store);
+    let proxy_url = store.proxy_url();
+    match github_api::device_flow_poll(device_code, proxy_url.as_deref())
+        .map_err(AppError::network)?
+    {
+        DevicePollOutcome::Pending => Ok(GithubDevicePollResult {
+            status: "pending".to_string(),
+            result: None,
+        }),
+        DevicePollOutcome::SlowDown => Ok(GithubDevicePollResult {
+            status: "slow_down".to_string(),
+            result: None,
+        }),
+        DevicePollOutcome::Authorized { token } => {
+            let result = connect_with_token(store, &token, repo_name.trim(), "oauth")?;
+            Ok(GithubDevicePollResult {
+                status: "connected".to_string(),
+                result: Some(result),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecloneResult {
+    pub kept_git: Option<String>,
+    pub local_copies: Option<String>,
+}
+
+/// An error after a (re-)clone that left files beside the library must still
+/// say where they are.
+fn name_what_was_left(
+    e: anyhow::Error,
+    left: &[(&str, &Option<std::path::PathBuf>)],
+) -> anyhow::Error {
+    let kept: Vec<String> = left
+        .iter()
+        .filter_map(|(what, path)| {
+            path.as_ref().map(|p| format!("{what} kept at {}", p.display()))
+        })
+        .collect();
+    if kept.is_empty() {
+        e
+    } else {
+        e.context(kept.join("; "))
+    }
+}
+
+pub fn git_backup_clone_impl(
+    store: &SkillStore,
+    url: &str,
+    set_aside: Option<Vec<String>>,
+) -> Result<Option<String>, AppError> {
+    git_fetcher::validate_git_url(url).map_err(AppError::git)?;
+    sync_engine_pref(store);
+    let skills_dir = central_repo::skills_dir();
+    let effective = sanitize_url_to_keychain(url.trim());
+    git_backup::with_repo_lock("git clone", || {
+        let local_copies = git_backup::clone_into_unlocked(
+            &skills_dir,
+            &effective,
+            &set_aside.unwrap_or_default(),
+        )?;
+        apply_device_identity(store, &skills_dir);
+        reconcile_skills_index_unlocked(store).map_err(|e| {
+            name_what_was_left(
+                e,
+                &[("local versions of differing skills", &local_copies)],
+            )
+        })?;
+        Ok(local_copies.map(|path| path.display().to_string()))
+    })
+    .map_err(classify_git_chain)
+}
+
+pub fn git_backup_reclone_impl(
+    store: &SkillStore,
+    url: &str,
+    set_aside: Option<Vec<String>>,
+) -> Result<RecloneResult, AppError> {
+    git_fetcher::validate_git_url(url).map_err(AppError::git)?;
+    sync_engine_pref(store);
+    let skills_dir = central_repo::skills_dir();
+    let effective = sanitize_url_to_keychain(url.trim());
+    git_backup::with_repo_lock("git reclone", || {
+        let outcome = git_backup::reclone_from_remote_unlocked(
+            &skills_dir,
+            &effective,
+            &set_aside.unwrap_or_default(),
+        )?;
+        apply_device_identity(store, &skills_dir);
+        reconcile_skills_index_unlocked(store).map_err(|e| {
+            name_what_was_left(
+                e,
+                &[
+                    ("the previous .git history", &outcome.kept_git),
+                    ("local versions of differing skills", &outcome.local_copies),
+                ],
+            )
+        })?;
+        let shown = |path: Option<std::path::PathBuf>| path.map(|p| p.display().to_string());
+        Ok(RecloneResult {
+            kept_git: shown(outcome.kept_git),
+            local_copies: shown(outcome.local_copies),
+        })
+    })
+    .map_err(classify_git_chain)
+}
+
+pub fn git_backup_migrate_credentials_impl(
+    store: &SkillStore,
+) -> Result<Option<String>, AppError> {
+    sync_engine_pref(store);
+    let skills_dir = central_repo::skills_dir();
+    git_backup::with_repo_lock("git credential migration", || {
+        migrate_embedded_credentials_unlocked(store, &skills_dir)
+    })
+    .map_err(AppError::git)
+}
+
+fn migrate_embedded_credentials_unlocked(
+    store: &SkillStore,
+    skills_dir: &Path,
+) -> anyhow::Result<Option<String>> {
+    let has_embedded = |url: &String| git_credentials::split_credentials_from_url(url).is_some();
+
+    let config_url = if skills_dir.join(".git").exists() {
+        git_backup::raw_remote_url(skills_dir)
+    } else {
+        None
+    };
+    let setting_url = store
+        .get_setting("git_backup_remote_url")
+        .ok()
+        .flatten()
+        .filter(|s| !s.trim().is_empty());
+
+    let config_had_creds = config_url.as_ref().map(has_embedded).unwrap_or(false);
+    let source_url = if config_had_creds {
+        config_url.clone()
+    } else {
+        setting_url.clone().filter(has_embedded)
+    };
+    let Some(source_url) = source_url else {
+        return Ok(None);
+    };
+
+    let (cred, sanitized) = git_credentials::split_credentials_from_url(&source_url)
+        .expect("source_url was checked to carry credentials");
+    let host = git_credentials::https_host(&sanitized)
+        .context("Cannot determine host for credential migration")?;
+
+    git_credentials::store_credential(&host, &cred)?;
+
+    if config_had_creds {
+        if let Err(e) = git_backup::set_remote_url_only(skills_dir, &sanitized) {
+            let _ = git_credentials::delete_credential(&host);
+            return Err(e);
+        }
+        if let Err(e) = git_backup::verify_remote_auth(skills_dir) {
+            let _ = git_backup::set_remote_url_only(skills_dir, &source_url);
+            let _ = git_credentials::delete_credential(&host);
+            return Err(e.context(
+                "Credential migration verification failed; previous configuration restored",
+            ));
+        }
+    }
+
+    if setting_url.as_deref() != Some(sanitized.as_str()) {
+        if let Err(e) = store.set_setting("git_backup_remote_url", &sanitized) {
+            if config_had_creds {
+                let _ = git_backup::set_remote_url_only(skills_dir, &source_url);
+            }
+            let _ = git_credentials::delete_credential(&host);
+            return Err(e);
+        }
+    }
+
+    log::info!("git credentials: migrated embedded token to credential store for {host}");
+    Ok(Some(sanitized))
 }

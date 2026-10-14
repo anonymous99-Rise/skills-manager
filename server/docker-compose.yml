@@ -4,8 +4,10 @@ services:
     image: skills-manager-server:latest
     container_name: skills-manager
     restart: unless-stopped
-    ports:
-      - "18080:8080"
+    # Host networking: the server reaches the host's clash proxy at
+    # 127.0.0.1:7890 directly (mihomo only listens on loopback), and the app
+    # port is published as-is (SM_PORT in .env).
+    network_mode: host
     volumes:
       - ./data:/data
     env_file:
