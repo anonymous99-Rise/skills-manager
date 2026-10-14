@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.1] - 2026-10-14
+
+### Fork internal release
+
+- First internal release of the fork: headless web server deployment for the team console, Gitea OAuth/token login, and full upstream feature parity (verified by a 66-check command surface test).
+- Release tooling: updater signing keypair rotated, Apple signing made optional for unsigned forks, tag/version drift guard added, draft-release race fixed.
+
 ## [1.41.0] - 2026-10-11
 
 ### Release Overview
