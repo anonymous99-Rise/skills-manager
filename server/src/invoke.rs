@@ -59,9 +59,6 @@ type ApiResult = Result<Json<Value>, ApiError>;
 const DESKTOP_ONLY: &[&str] = &[
     "install_local",
     "batch_import_folder",
-    "import_existing_skill",
-    "import_all_discovered",
-    "scan_local_skills",
     "scanProjectsCmd",
     "add_project",
     "add_linked_workspace",
@@ -409,6 +406,24 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
             let a: A = args_to(args)?;
             ops::batch_update_skills_impl(store, &a.skill_ids, store.proxy_url().as_deref())
                 .map(serialize)
+        }
+
+        // ── Scan local agent dirs (server-side: /data/<agent>/skills etc.) ──
+        "scan_local_skills" => ops::scan_local_skills_impl(store).map(serialize),
+        "import_existing_skill" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(rename = "sourcePath")]
+                source_path: String,
+                #[serde(default)]
+                name: Option<String>,
+            }
+            let a: A = args_to(args)?;
+            ops::import_existing_skill_impl(store, &a.source_path, a.name.as_deref())
+                .map(serialize_null)
+        }
+        "import_all_discovered" => {
+            ops::import_all_discovered_impl(store).map(serialize_null)
         }
 
         // ── Presets ──

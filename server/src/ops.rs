@@ -1805,6 +1805,192 @@ pub fn batch_update_skills_impl(
     })
 }
 
+// ── Scan local agent dirs (headless port of commands/scan.rs) ──
+
+#[derive(Debug, Serialize)]
+pub struct ScanResultDto {
+    pub tools_scanned: usize,
+    pub skills_found: usize,
+    pub groups: Vec<crate::core::scanner::DiscoveredGroup>,
+}
+
+fn canonicalize_lossy(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn match_imported_skill_id(
+    rec: &crate::core::skill_store::DiscoveredSkillRecord,
+    managed_skills: &[SkillRecord],
+) -> Option<String> {
+    let found_path = canonicalize_lossy(&rec.found_path);
+    if let Some(existing) = managed_skills.iter().find(|skill| {
+        skill.source_ref.as_deref().map(|s| canonicalize_lossy(s)).as_ref() == Some(&found_path)
+            || skill
+                .source_ref_resolved
+                .as_deref()
+                .map(|s| canonicalize_lossy(s))
+                .as_ref()
+                == Some(&found_path)
+    }) {
+        return Some(existing.id.clone());
+    }
+
+    if let Some(fingerprint) = rec.fingerprint.as_deref() {
+        if let Some(existing) = managed_skills
+            .iter()
+            .find(|skill| skill.content_hash.as_deref() == Some(fingerprint))
+        {
+            return Some(existing.id.clone());
+        }
+    }
+
+    None
+}
+
+pub fn scan_local_skills_impl(store: &SkillStore) -> Result<ScanResultDto, AppError> {
+    let all_targets = store.get_all_targets().map_err(AppError::db)?;
+    let managed_paths: Vec<String> = all_targets.iter().map(|t| t.target_path.clone()).collect();
+    let managed_skills = store.get_all_skills().map_err(AppError::db)?;
+
+    let adapters = crate::core::tool_adapters::all_tool_adapters(store);
+    let mut plan = crate::core::scanner::scan_local_skills_with_adapters(
+        &managed_paths,
+        &adapters,
+    )
+    .map_err(AppError::io)?;
+
+    for rec in &mut plan.discovered {
+        rec.imported_skill_id = match_imported_skill_id(rec, &managed_skills);
+    }
+
+    store.clear_discovered().map_err(AppError::db)?;
+    for rec in &plan.discovered {
+        store.insert_discovered(rec).map_err(AppError::db)?;
+    }
+
+    let all_discovered = store.get_all_discovered().map_err(AppError::db)?;
+    let groups = crate::core::scanner::group_discovered(&all_discovered);
+
+    Ok(ScanResultDto {
+        tools_scanned: plan.tools_scanned,
+        skills_found: plan.skills_found,
+        groups,
+    })
+}
+
+pub fn import_existing_skill_impl(
+    store: &SkillStore,
+    source_path: &str,
+    name: Option<&str>,
+) -> Result<(), AppError> {
+    sync_metadata::with_repo_lock("import existing skill", || {
+        let path = PathBuf::from(source_path);
+        let resolved_name =
+            crate::core::installer::resolve_local_skill_name(&path, name)?;
+
+        let result = crate::core::installer::install_from_local(&path, Some(&resolved_name))?;
+
+        if store
+            .get_skill_by_central_path(&result.central_path.to_string_lossy())?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let record = SkillRecord {
+            id: id.clone(),
+            name: result.name,
+            description: result.description,
+            source_type: "import".to_string(),
+            source_ref: Some(source_path.to_string()),
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: result.central_path.to_string_lossy().to_string(),
+            content_hash: Some(result.content_hash),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        };
+
+        store.insert_skill(&record)?;
+
+        sync_metadata::write_all_from_db_unlocked(store)
+    })
+    .map_err(AppError::io)
+}
+
+pub fn import_all_discovered_impl(store: &SkillStore) -> Result<(), AppError> {
+    sync_metadata::with_repo_lock("import all discovered skills", || {
+        let discovered = store.get_all_discovered()?;
+        let groups = crate::core::scanner::group_discovered(&discovered);
+
+        let mut changed = false;
+
+        for group in groups {
+            if group.imported {
+                continue;
+            }
+            if let Some(first) = group.locations.first() {
+                let path = PathBuf::from(&first.found_path);
+
+                if let Ok(result) =
+                    crate::core::installer::install_from_local(&path, Some(&group.name))
+                {
+                    if store
+                        .get_skill_by_central_path(&result.central_path.to_string_lossy())?
+                        .is_some()
+                    {
+                        continue;
+                    }
+
+                    let now = chrono::Utc::now().timestamp_millis();
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let record = SkillRecord {
+                        id,
+                        name: result.name,
+                        description: result.description,
+                        source_type: "import".to_string(),
+                        source_ref: Some(first.found_path.clone()),
+                        source_ref_resolved: None,
+                        source_subpath: None,
+                        source_branch: None,
+                        source_revision: None,
+                        remote_revision: None,
+                        central_path: result.central_path.to_string_lossy().to_string(),
+                        content_hash: Some(result.content_hash),
+                        enabled: true,
+                        created_at: now,
+                        updated_at: now,
+                        status: "ok".to_string(),
+                        update_status: "local_only".to_string(),
+                        last_checked_at: None,
+                        last_check_error: None,
+                    };
+                    store.insert_skill(&record)?;
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            sync_metadata::write_all_from_db_unlocked(store)?;
+        }
+
+        Ok(())
+    })
+    .map_err(AppError::io)
+}
+
 // ── Tags ──
 
 pub fn set_skill_tags_internal(
