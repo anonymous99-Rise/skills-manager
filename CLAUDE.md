@@ -42,7 +42,7 @@
 ## 用户说「发版 / release」时
 
 - 推 `v*` tag 到 GitHub 即自动触发构建签名发包(也支持 Actions 页手动 Run workflow)
-- 产物是 **draft release**,四平台齐了在 Releases 页手动 Publish
+- 构建全部通过后流水线**自动 Publish**(最后一个 Publish release job 负责把验证过的草稿转正),无需手动操作
 - 更新器密钥对在 `D:\devlops\tauri-updater-keys\`(密码同步存在 GitHub secret;公钥在 tauri.conf.json,三者必须匹配)
 
 ## 已知坑(踩过的,别再踩)
