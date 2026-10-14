@@ -105,6 +105,26 @@ pub fn store_credential(host: &str, cred: &RemoteCredential) -> Result<()> {
 }
 
 pub fn load_credential(host: &str) -> Result<Option<RemoteCredential>> {
+    // Headless override: `SM_GIT_CRED_<HOST>` (non-alphanumerics → `_`) holds
+    // "username:password" and takes precedence over the OS keychain. This lets
+    // a server (no secret service) supply the backup remote credential without
+    // touching anything desktop-specific.
+    let env_key = format!(
+        "SM_GIT_CRED_{}",
+        host.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect::<String>()
+            .to_uppercase()
+    );
+    if let Ok(pair) = std::env::var(&env_key) {
+        if let Some((username, password)) = pair.split_once(':') {
+            return Ok(Some(RemoteCredential {
+                username: username.to_string(),
+                password: password.to_string(),
+            }));
+        }
+    }
+
     match keyring_entry(host)?.get_password() {
         Ok(payload) => Ok(Some(serde_json::from_str(&payload).with_context(|| {
             format!("Corrupted keychain entry for {host}")

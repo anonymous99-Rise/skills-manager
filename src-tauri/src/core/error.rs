@@ -192,6 +192,10 @@ impl From<tokio::task::JoinError> for AppError {
     }
 }
 
+// Desktop-only: headless consumers (the server crate) include this file
+// without the tauri dependency, so the impl is feature-gated. The desktop
+// crate enables `feature = "desktop"` by default.
+#[cfg(feature = "desktop")]
 impl From<tauri::Error> for AppError {
     fn from(e: tauri::Error) -> Self {
         Self {

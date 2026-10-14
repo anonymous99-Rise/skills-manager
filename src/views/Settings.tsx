@@ -47,11 +47,14 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { listen } from "@tauri-apps/api/event";
-import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
-import { check as checkUpdater } from "@tauri-apps/plugin-updater";
-import { open as dialogOpen, confirm as dialogConfirm } from "@tauri-apps/plugin-dialog";
+import {
+  openUrl,
+  listen,
+  writeText as clipboardWriteText,
+  checkAppUpdater as checkUpdater,
+  openDialog as dialogOpen,
+  dialogConfirm,
+} from "../lib/transport";
 import { useNavigate } from "react-router-dom";
 import { cn, compactHomePath } from "../utils";
 import { useApp } from "../context/AppContext";

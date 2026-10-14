@@ -38,3 +38,9 @@ CLAUDE.md
 AGENTS.md
 .loop-log
 
+
+# skills-manager-server local secrets
+server/.env
+server/data/
+server/public/
+server/skills-manager-server

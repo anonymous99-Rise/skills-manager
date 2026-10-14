@@ -26,7 +26,7 @@ import {
   Tag,
   Trash2,
 } from "lucide-react";
-import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+import { openDialog as dialogOpen } from "../lib/transport";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";

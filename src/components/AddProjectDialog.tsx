@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { X, FolderOpen, Search, Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+import { openDialog as dialogOpen } from "../lib/transport";
 import { cn } from "../utils";
 import * as api from "../lib/tauri";
 

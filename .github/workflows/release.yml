@@ -152,10 +152,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # A missing secret must break the build loudly: tauri-action would otherwise
-      # fall back to a linker-only signature that has no sealed resources and fails
-      # `codesign --verify` (issue #138). The notarization key is delivered as
-      # base64 because Tauri wants a path to the .p8, not its contents.
+      # A missing secret must not silently produce a linker-only signature that
+      # fails `codesign --verify` (issue #138) — but unsigned releases are a
+      # legitimate choice for forks without an Apple Developer account, so the
+      # missing credentials now downgrade the macOS legs to unsigned builds
+      # instead of failing the release. Set MACOS_SIGNING=1 only when every
+      # secret is present; signing/notarization/verification steps key off it.
+      # The notarization key is delivered as base64 because Tauri wants a path
+      # to the .p8, not its contents.
       - name: Prepare macOS signing credentials
         if: startsWith(matrix.platform, 'macos')
         env:
@@ -172,14 +176,16 @@ jobs:
                       APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_BASE64; do
             value=${!name:-}
             if [ -z "$value" ]; then
-              echo "Missing repository secret: $name" >&2
+              echo "::warning::Missing repository secret: $name" >&2
               fail=1
             fi
           done
           if [ "$fail" -ne 0 ]; then
-            echo "macOS releases require Developer ID signing + notarization credentials." >&2
-            exit 1
+            echo "::warning::Apple signing secrets are incomplete — building UNSIGNED macOS bundles (users must right-click → Open on first launch)."
+            echo "MACOS_SIGNING=0" >> "$GITHUB_ENV"
+            exit 0
           fi
+          echo "MACOS_SIGNING=1" >> "$GITHUB_ENV"
           KEY_DIR="$RUNNER_TEMP/private_keys"
           KEY_PATH="$KEY_DIR/AuthKey_${APPLE_API_KEY}.p8"
           mkdir -p "$KEY_DIR"
@@ -223,7 +229,7 @@ jobs:
           args: --target ${{ matrix.target }}
 
       - name: Verify macOS signature and notarization
-        if: startsWith(matrix.platform, 'macos')
+        if: startsWith(matrix.platform, 'macos') && env.MACOS_SIGNING == '1'
         run: |
           set -euo pipefail
           verify_bundle() {
@@ -291,7 +297,7 @@ jobs:
           fi
 
       - name: Sign and notarize macOS CLI binary
-        if: startsWith(matrix.platform, 'macos')
+        if: startsWith(matrix.platform, 'macos') && env.MACOS_SIGNING == '1'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

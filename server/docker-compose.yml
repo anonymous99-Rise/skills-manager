@@ -1,0 +1,12 @@
+services:
+  skills-manager:
+    build: .
+    image: skills-manager-server:latest
+    container_name: skills-manager
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env

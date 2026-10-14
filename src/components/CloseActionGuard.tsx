@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../lib/transport";
 import { CloseActionDialog } from "./CloseActionDialog";
 import * as api from "../lib/tauri";
 

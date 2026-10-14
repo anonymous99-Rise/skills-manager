@@ -18,9 +18,7 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { listen } from "@tauri-apps/api/event";
-import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { listen, writeText as clipboardWriteText, openUrl } from "../lib/transport";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "../utils";

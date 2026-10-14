@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "../lib/transport";
 import type { AppUpdateInfo, ManagedSkill, Project, Preset, ToolInfo } from "../lib/tauri";
 import * as api from "../lib/tauri";
 import i18n from "../i18n";
