@@ -1,6 +1,6 @@
 {
   "app": {
-    "name": "Skills Manager"
+    "name": "Hope Skills Manager"
   },
   "sidebar": {
     "dashboard": "Dashboard",
@@ -645,7 +645,7 @@
     "help": "Help",
     "website": "Website",
     "about": "About",
-    "version": "Skills Manager 1.41.0",
+    "version": "Hope Skills Manager",
     "tagline": "Cross-platform. Minimal, efficient, seamless multi-preset switching.",
     "checkUpdate": "Check for Updates",
     "checking": "Checking…",

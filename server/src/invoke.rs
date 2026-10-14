@@ -1050,12 +1050,12 @@ fn check_app_update_impl(
             "has_update": false,
             "current_version": env!("CARGO_PKG_VERSION"),
             "latest_version": "",
-            "release_url": "https://github.com/xingkongliang/skills-manager/releases",
+            "release_url": "https://github.com/anonymous99-Rise/skills-manager/releases",
         })
     };
 
     let resp: serde_json::Value = match client
-        .get("https://api.github.com/repos/xingkongliang/skills-manager/releases/latest")
+        .get("https://api.github.com/repos/anonymous99-Rise/skills-manager/releases/latest")
         .header("User-Agent", "skills-manager-server")
         .send()
     {
@@ -1082,7 +1082,7 @@ fn check_app_update_impl(
     let latest_version = tag.strip_prefix('v').unwrap_or(tag).to_string();
     let release_url = resp["html_url"]
         .as_str()
-        .unwrap_or("https://github.com/xingkongliang/skills-manager/releases")
+        .unwrap_or("https://github.com/anonymous99-Rise/skills-manager/releases")
         .to_string();
 
     Ok(serde_json::json!({

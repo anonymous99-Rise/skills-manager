@@ -260,7 +260,7 @@ async fn login_page() -> Response {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>登录 · Skills Manager</title>
+<title>登录 · Hope Skills Manager</title>
 <style>
   body {{ font-family: system-ui, sans-serif; background: #0d1117; color: #e6edf3;
          display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
@@ -279,7 +279,7 @@ async fn login_page() -> Response {
 </head>
 <body>
 <div class="card">
-  <h1>Skills Manager — 登录</h1>
+  <h1>Hope Skills Manager — 登录</h1>
   <button onclick="location='/api/auth/gitea/login'">使用 Gitea OAuth 登录</button>
   <div class="hint">OAuth 端点若被服务端禁用,请用下方令牌方式。</div>
   <hr style="border-color:#30363d;margin:16px 0">
