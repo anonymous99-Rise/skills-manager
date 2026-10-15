@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `release:prepare` updates the version string in every `src/i18n/*.json`, so a new locale needs no script change. The Prepare Release workflow now commits every file the script writes; before, it staged only five of them.
 - All skill searches share `src/lib/skillSearch.ts`.
 - The `RunEvent::Reopen` handler is macOS-only, so Windows and Linux builds no longer warn about its unused arguments (#552).
+
+### Hope Skills Manager
+- Internal sync release: upstream v1.42.0 merged with no new fork-only features. The web server was rebuilt and production redeployed on this base.
+
 ## [1.41.2] - 2026-10-14
 
 ### Hope Skills Manager

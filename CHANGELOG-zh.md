@@ -22,6 +22,10 @@
 - `release:prepare` 会更新每个 `src/i18n/*.json` 里的版本号，新增语种不用再改脚本。「Prepare Release」工作流现在会提交脚本改动的全部文件，此前只提交其中五个。
 - 所有技能搜索共用 `src/lib/skillSearch.ts`。
 - `RunEvent::Reopen` 的处理只在 macOS 上生效，Windows 和 Linux 构建不再报参数未使用的警告（#552）。
+
+### Hope Skills Manager
+- 内部同步版本：合并上游 v1.42.0，无新增 fork 特有功能；服务端已重建并重新部署生产环境。
+
 ## [1.41.2] - 2026-10-14
 
 ### Hope Skills Manager
