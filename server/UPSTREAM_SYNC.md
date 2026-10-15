@@ -42,3 +42,13 @@ git merge upstream/main        # 用 merge,不要 rebase(历史已共享到 Gite
 ## 缩小 delta 的策略
 
 小的 enabling 改动(feature 门控、签名可选化、env 凭据兜底)值得给上游提 PR —— 被合并一项,上面清单就少一项,以后合并就少一处冲突。架构级改动(服务端模式)先开 issue 讨论再动。
+
+## 发版时的 tag 坑(重要)
+
+`git fetch upstream` 会把上游的 `v*` tag 一并拉到本地。上游发了 `v1.42.0` 之后,本地 `v1.42.0` 指向的是**上游的 commit**——此时直接 `git push origin v1.42.0` 会把纯上游代码(不含我们的 delta)发成我们的版本。发版前必须:
+
+```bash
+git rev-parse v1.42.0^{commit}   # 确认指向;若指向上游 commit,先 git tag -d 再重打到我们的 commit
+```
+
+推完用 `git ls-remote origin "refs/tags/v1.42.0^{}` " 复核两处远端都指向 fork 的 commit。
