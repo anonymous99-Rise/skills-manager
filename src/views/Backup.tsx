@@ -17,8 +17,9 @@ import {
   Upload,
   Wrench,
   XCircle,
+  Server,
 } from "lucide-react";
-import { listen, writeText as clipboardWriteText, openUrl } from "../lib/transport";
+import { isTauri, listen, writeText as clipboardWriteText, openUrl } from "../lib/transport";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "../utils";
@@ -46,7 +47,7 @@ type BackupMode =
   | "up_to_date"
   | "pending_changes";
 
-type LoadingAction = "start" | "sync" | "recovery" | "save" | "disconnect" | "github" | null;
+type LoadingAction = "start" | "sync" | "recovery" | "save" | "disconnect" | "github" | "gitea" | null;
 
 const DEFAULT_GITHUB_REPO = "skills-manager-backup";
 const GITHUB_TOKEN_URL =
@@ -103,6 +104,10 @@ export function Backup() {
   const [githubToken, setGithubToken] = useState("");
   const [githubRepoName, setGithubRepoName] = useState(DEFAULT_GITHUB_REPO);
   const [githubError, setGithubError] = useState<string | null>(null);
+  const [giteaUrl, setGiteaUrl] = useState("https://git.nxwysoft.com");
+  const [giteaToken, setGiteaToken] = useState("");
+  const [giteaRepoName, setGiteaRepoName] = useState(DEFAULT_GITHUB_REPO);
+  const [giteaError, setGiteaError] = useState<string | null>(null);
   const [patMode, setPatMode] = useState(false);
   const [deviceInfo, setDeviceInfo] = useState<api.GithubDeviceFlowStart | null>(null);
   const deviceCancelRef = useRef(false);
@@ -552,12 +557,15 @@ export function Backup() {
 
   const mapGithubError = (error: unknown) => {
     const message = getErrorMessage(error, "");
-    if (message.includes("GITHUB_TOKEN_INVALID")) return t("backup.github.errorToken");
-    if (message.includes("GITHUB_SCOPE")) return t("backup.github.errorScope");
+    if (message.includes("GITHUB_TOKEN_INVALID") || message.includes("GITEA_TOKEN_INVALID"))
+      return t("backup.github.errorToken");
+    if (message.includes("GITHUB_SCOPE") || message.includes("GITEA_SCOPE"))
+      return t("backup.gitea.errorScope");
+    if (message.includes("GITEA_BAD_URL")) return t("backup.gitea.errorUrl");
     if (message.includes("KEYCHAIN_UNAVAILABLE")) return t("backup.github.errorKeychain");
     if (message.includes("GITHUB_DEVICE_EXPIRED")) return t("backup.github.deviceExpired");
     if (message.includes("GITHUB_DEVICE_DENIED")) return t("backup.github.deviceDenied");
-    if (message.includes("GITHUB_NETWORK") || getErrorKind(error) === "network") {
+    if (message.includes("GITHUB_NETWORK") || message.includes("GITEA_NETWORK") || getErrorKind(error) === "network") {
       // §3.2: when github.com is unreachable, point at the PAT fallback too.
       return `${t("settings.gitErrorNetwork")} ${t("backup.github.deviceFallbackPat")}`;
     }
@@ -576,7 +584,7 @@ export function Backup() {
     setRemoteInput(res.url);
     setRemoteConfig(res.url);
     if (res.repo_created) {
-      const repo = res.url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
+      const repo = res.url.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
       toast.success(t("backup.github.repoCreated", { repo }));
     }
     if (!res.repo_private) {
@@ -625,6 +633,28 @@ export function Backup() {
       await finishGithubConnect(res);
     } catch (error) {
       setGithubError(mapGithubError(error));
+    } finally {
+      setLoading(null);
+    }
+  };
+
+  const handleGiteaConnect = async () => {
+    const token = giteaToken.trim();
+    const base = giteaUrl.trim();
+    if (!token || !base) return;
+    setLoading("gitea");
+    setGiteaError(null);
+    try {
+      const res = await api.giteaBackupConnect(
+        base,
+        token,
+        giteaRepoName.trim() || DEFAULT_GITHUB_REPO,
+      );
+      // Token is in the OS keychain now; drop it from component state.
+      setGiteaToken("");
+      await finishGithubConnect(res);
+    } catch (error) {
+      setGiteaError(mapGithubError(error));
     } finally {
       setLoading(null);
     }
@@ -1111,6 +1141,77 @@ export function Backup() {
                   )}
                 </div>
               )}
+            </section>
+          )}
+
+          {isTauri && (reconnectMode || (!gitStatus?.remote_url && !remoteConfig)) && (
+            <section className="app-panel p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Server className="h-4 w-4 text-muted" />
+                <h2 className="text-[14px] font-semibold text-secondary">
+                  {t("backup.gitea.title")}
+                </h2>
+              </div>
+              <p className="mb-3 text-[13px] leading-5 text-muted">{t("backup.gitea.desc")}</p>
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={giteaUrl}
+                    onChange={(event) => {
+                      setGiteaUrl(event.target.value);
+                      setGiteaError(null);
+                    }}
+                    placeholder={t("backup.gitea.urlPlaceholder")}
+                    disabled={loading === "gitea"}
+                    className="h-8 w-56 rounded-lg border border-border-subtle bg-background px-2.5 font-mono text-[13px] text-secondary outline-none transition-colors focus:border-border disabled:opacity-50"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <input
+                    type="text"
+                    value={giteaRepoName}
+                    onChange={(event) => setGiteaRepoName(event.target.value)}
+                    disabled={loading === "gitea"}
+                    title={t("backup.gitea.repoLabel")}
+                    className="h-8 w-52 rounded-lg border border-border-subtle bg-background px-2.5 font-mono text-[13px] text-secondary outline-none transition-colors focus:border-border disabled:opacity-50"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="password"
+                    value={giteaToken}
+                    onChange={(event) => {
+                      setGiteaToken(event.target.value);
+                      setGiteaError(null);
+                    }}
+                    placeholder={t("backup.gitea.tokenPlaceholder")}
+                    disabled={loading === "gitea"}
+                    className="h-8 min-w-0 flex-1 rounded-lg border border-border-subtle bg-background px-2.5 font-mono text-[13px] text-secondary outline-none transition-colors focus:border-border disabled:opacity-50"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleGiteaConnect}
+                    disabled={!!loading || !giteaToken.trim() || !giteaUrl.trim()}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-surface-hover px-2.5 text-[13px] font-medium text-tertiary transition-colors hover:bg-surface-active disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loading === "gitea" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    {loading === "gitea" ? t("backup.gitea.connecting") : t("backup.gitea.connect")}
+                  </button>
+                </div>
+                {giteaError && (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] leading-5 text-red-600 dark:text-red-300">
+                    {giteaError}
+                  </div>
+                )}
+              </div>
             </section>
           )}
 

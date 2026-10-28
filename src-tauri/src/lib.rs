@@ -1079,6 +1079,7 @@ pub fn run() {
             commands::git_backup::github_backup_connect,
             commands::git_backup::github_device_flow_start,
             commands::git_backup::github_device_flow_poll,
+            commands::git_backup::gitea_backup_connect,
             commands::git_backup::git_backup_sanitize_remote_url,
             commands::git_backup::git_backup_migrate_credentials,
             commands::git_backup::git_backup_size_report,

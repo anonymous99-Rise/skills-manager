@@ -221,7 +221,18 @@
       "snapshots": "Snapshots"
     },
     "credentialsMigrated": "The access token found in your backup URL was moved to the system keychain. It no longer appears in any file.",
-    "restoreSafetyPoint": "Your previous state was saved as snapshot {{tag}} — you can restore it from the history at any time."
+    "restoreSafetyPoint": "Your previous state was saved as snapshot {{tag}} — you can restore it from the history at any time.",
+    "gitea": {
+      "title": "Connect a self-hosted Gitea",
+      "desc": "Paste a Gitea access token (profile → Settings → Applications → Generate new token, with repository write permission). The app creates a private backup repository on your instance; the token goes into the OS keychain.",
+      "urlPlaceholder": "Gitea URL https://git.example.com",
+      "repoLabel": "Repository name",
+      "tokenPlaceholder": "Gitea access token",
+      "connect": "Connect",
+      "connecting": "Connecting…",
+      "errorScope": "The token cannot create the backup repository. Grant it repository write permission on your Gitea instance.",
+      "errorUrl": "The Gitea URL must start with https:// or http:// and include a host."
+    }
   },
   "firstRun": {
     "title": "Start fresh, or restore from a backup?",

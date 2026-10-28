@@ -221,7 +221,18 @@
       "snapshots": "Instantáneas",
       "title": "Resumen de la Biblioteca"
     },
-    "title": "Copia de seguridad"
+    "title": "Copia de seguridad",
+    "gitea": {
+      "title": "Conectar un Gitea autoalojado",
+      "desc": "Pega un token de acceso de Gitea (avatar → Configuración → Aplicaciones → Generar nuevo token, con permiso de escritura de repositorios). La app crea un repositorio privado de copia de seguridad en tu instancia; el token se guarda solo en el llavero del sistema.",
+      "urlPlaceholder": "Dirección de Gitea https://git.example.com",
+      "repoLabel": "Nombre del repositorio",
+      "tokenPlaceholder": "Token de acceso de Gitea",
+      "connect": "Conectar",
+      "connecting": "Conectando…",
+      "errorScope": "El token no puede crear el repositorio de copia de seguridad. Concédele permiso de escritura de repositorios en tu Gitea.",
+      "errorUrl": "La dirección de Gitea debe empezar por https:// o http:// e incluir un host."
+    }
   },
   "firstRun": {
     "title": "¿Empezar de cero o restaurar desde una copia?",

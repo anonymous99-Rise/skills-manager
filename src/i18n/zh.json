@@ -221,7 +221,18 @@
       "snapshots": "快照"
     },
     "credentialsMigrated": "检测到备份地址中包含访问令牌，已将其转移至系统钥匙串，不再出现在任何文件中。",
-    "restoreSafetyPoint": "恢复前的状态已保存为备份点 {{tag}}，可随时从历史中恢复。"
+    "restoreSafetyPoint": "恢复前的状态已保存为备份点 {{tag}}，可随时从历史中恢复。",
+    "gitea": {
+      "title": "连接自建 Gitea",
+      "desc": "粘贴 Gitea 访问令牌(右上角头像 → 设置 → 应用 → 生成新令牌,权限含仓库写)。应用会在你的实例上创建私有备份仓库;令牌只存系统钥匙串。",
+      "urlPlaceholder": "Gitea 地址 https://git.example.com",
+      "repoLabel": "仓库名",
+      "tokenPlaceholder": "Gitea 访问令牌",
+      "connect": "连接",
+      "connecting": "正在连接…",
+      "errorScope": "令牌无法创建备份仓库。请在 Gitea 上为它授予仓库写权限。",
+      "errorUrl": "Gitea 地址必须以 https:// 或 http:// 开头并包含主机名。"
+    }
   },
   "firstRun": {
     "title": "全新开始，还是从备份恢复？",

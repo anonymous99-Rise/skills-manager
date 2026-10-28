@@ -607,6 +607,12 @@ export interface GithubBackupConnectResult {
 export const githubBackupConnect = (token: string, repoName: string) =>
   invoke<GithubBackupConnectResult>("github_backup_connect", { token, repoName });
 
+/** Gitea guided connect (PAT, desktop-only): same contract as the GitHub PAT
+ * connect against a self-hosted instance; the token goes to the OS keychain
+ * under the instance host. */
+export const giteaBackupConnect = (giteaUrl: string, token: string, repoName: string) =>
+  invoke<GithubBackupConnectResult>("gitea_backup_connect", { giteaUrl, token, repoName });
+
 export interface GithubDeviceFlowStart {
   device_code: string;
   user_code: string;

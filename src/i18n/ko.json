@@ -221,7 +221,18 @@
       "snapshots": "스냅샷"
     },
     "credentialsMigrated": "백업 URL에 있던 액세스 토큰을 시스템 키체인으로 옮겼습니다. 이제 어떤 파일에도 남아 있지 않습니다.",
-    "restoreSafetyPoint": "이전 상태를 스냅샷으로 저장했습니다: {{tag}}. 기록에서 언제든 되돌릴 수 있습니다."
+    "restoreSafetyPoint": "이전 상태를 스냅샷으로 저장했습니다: {{tag}}. 기록에서 언제든 되돌릴 수 있습니다.",
+    "gitea": {
+      "title": "자체 호스팅 Gitea 연결",
+      "desc": "Gitea 액세스 토큰을 붙여넣으세요(프로필 → 설정 → 애플리케이션 → 새 토큰 생성, 저장소 쓰기 권한 포함). 앱이 인스턴스에 비공개 백업 저장소를 만들고, 토큰은 OS 키체인에만 저장됩니다.",
+      "urlPlaceholder": "Gitea 주소 https://git.example.com",
+      "repoLabel": "저장소 이름",
+      "tokenPlaceholder": "Gitea 액세스 토큰",
+      "connect": "연결",
+      "connecting": "연결 중…",
+      "errorScope": "토큰이 백업 저장소를 만들 수 없습니다. Gitea에서 저장소 쓰기 권한을 부여하세요.",
+      "errorUrl": "Gitea 주소는 https:// 또는 http://로 시작하고 호스트명을 포함해야 합니다."
+    }
   },
   "firstRun": {
     "title": "새로 시작할까요, 백업에서 복원할까요?",

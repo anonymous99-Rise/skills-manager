@@ -221,7 +221,18 @@
       "snapshots": "快照"
     },
     "credentialsMigrated": "偵測到備份位址中包含存取權杖，已將其轉移至系統鑰匙圈，不再出現在任何檔案中。",
-    "restoreSafetyPoint": "還原前的狀態已儲存為備份點 {{tag}}，可隨時從歷史中還原。"
+    "restoreSafetyPoint": "還原前的狀態已儲存為備份點 {{tag}}，可隨時從歷史中還原。",
+    "gitea": {
+      "title": "連線自建 Gitea",
+      "desc": "貼上 Gitea 存取權杖(右上角頭像 → 設定 → 應用程式 → 產生新權杖,權限含儲存庫寫入)。應用會在你的執行個體上建立私有備份儲存庫;權杖只存系統鑰匙圈。",
+      "urlPlaceholder": "Gitea 位址 https://git.example.com",
+      "repoLabel": "儲存庫名稱",
+      "tokenPlaceholder": "Gitea 存取權杖",
+      "connect": "連線",
+      "connecting": "正在連線…",
+      "errorScope": "權杖無法建立備份儲存庫。請在 Gitea 上授予它儲存庫寫入權限。",
+      "errorUrl": "Gitea 位址必須以 https:// 或 http:// 開頭並包含主機名。"
+    }
   },
   "firstRun": {
     "title": "全新開始，還是從備份還原？",

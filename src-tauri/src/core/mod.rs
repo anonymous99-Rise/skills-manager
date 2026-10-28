@@ -12,6 +12,7 @@ pub mod git2_engine;
 pub mod git_backup;
 pub mod git_credentials;
 pub mod git_fetcher;
+pub mod gitea_api;
 pub mod github_api;
 pub mod install_cancel;
 pub mod installer;

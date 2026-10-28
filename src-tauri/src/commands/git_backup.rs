@@ -1,6 +1,6 @@
 use crate::core::{
     central_repo, error::AppError, git2_engine, git_backup, git_credentials, git_fetcher,
-    github_api, merge, skill_metadata, sync_metadata,
+    gitea_api, github_api, merge, skill_metadata, sync_metadata,
 };
 use anyhow::Context;
 use std::path::Path;
@@ -237,6 +237,70 @@ pub async fn github_device_flow_start(
         github_api::device_flow_start(proxy_url.as_deref()).map_err(AppError::network)
     })
     .await?
+}
+
+/// Gitea guided connect: validate the PAT against the instance, find or
+/// create the private backup repository, store the token in the OS keychain
+/// under the instance host, and save the credential-free URL. Reuses the
+/// GitHub result DTO — the fields the frontend consumes are identical.
+#[tauri::command]
+pub async fn gitea_backup_connect(
+    store: State<'_, Arc<SkillStore>>,
+    gitea_url: String,
+    token: String,
+    repo_name: String,
+) -> Result<GithubBackupConnectResult, AppError> {
+    let store = store.inner().clone();
+    sync_engine_pref(&store);
+    tokio::task::spawn_blocking(move || {
+        connect_gitea_with_token(&store, gitea_url.trim(), token.trim(), repo_name.trim())
+    })
+    .await?
+}
+
+fn connect_gitea_with_token(
+    store: &SkillStore,
+    base_url: &str,
+    token: &str,
+    repo_name: &str,
+) -> Result<GithubBackupConnectResult, AppError> {
+    if token.is_empty() {
+        return Err(AppError::invalid_input("Token is empty"));
+    }
+    if !gitea_api::is_valid_repo_name(repo_name) {
+        return Err(AppError::invalid_input("Invalid repository name"));
+    }
+
+    let proxy_url = store.proxy_url();
+    let info = gitea_api::connect_backup_repo(base_url, token, repo_name, proxy_url.as_deref())
+        .map_err(AppError::network)?;
+
+    let host = git_credentials::https_host(&info.url).ok_or_else(|| {
+        AppError::invalid_input("GITEA_BAD_URL: the Gitea URL is not a valid http(s) remote")
+    })?;
+    git_credentials::store_credential(
+        &host,
+        &git_credentials::RemoteCredential {
+            username: info.login.clone(),
+            password: token.to_string(),
+        },
+    )
+    .map_err(|e| AppError::internal(format!("KEYCHAIN_UNAVAILABLE: {e:#}")))?;
+
+    store
+        .set_setting("git_backup_remote_url", &info.url)
+        .map_err(AppError::db)?;
+
+    let remote_has_content =
+        git_backup::remote_has_heads(&info.url).map_err(classify_git_chain)?;
+
+    Ok(GithubBackupConnectResult {
+        url: info.url,
+        login: info.login,
+        repo_created: info.repo_created,
+        repo_private: info.repo_private,
+        remote_has_content,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
