@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **About this fork** — Hope Skills Manager is a fork of
+> [xingkongliang/skills-manager](https://github.com/xingkongliang/skills-manager),
+> maintained for internal use with Gitea integration and a headless web server.
+> Changelog entries up to and including 1.42.0 describe the upstream releases.
+
 ## [1.42.0] - 2026-10-14
 
 ### Release Overview

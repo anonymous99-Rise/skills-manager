@@ -2,34 +2,14 @@
   <img src="assets/icon.png" width="80" />
 </p>
 
-<h1 align="center">Skills Manager</h1>
+<h1 align="center">Hope Skills Manager</h1>
 
 <p align="center">
   一个应用，统一管理所有 AI 编码工具的 Skills。
 </p>
 
 <p align="center">
-  <strong><a href="https://skillsmanager.dev/zh">skillsmanager.dev</a></strong>
-</p>
-
-<p align="center">
-  🎬 <a href="https://www.bilibili.com/video/BV1cdpc6PExG/">1.5 分钟介绍（Bilibili）</a>
-  &nbsp;·&nbsp;
-  <a href="https://www.bilibili.com/video/BV1845F6REUu/">完整功能演示（9 分钟）</a>
-  &nbsp;·&nbsp;
-  <a href="https://www.youtube.com/watch?v=DJ9RIX8nbow">Video intro (YouTube)</a>
-</p>
-
-<p align="center">
   <a href="./README.md">English</a>
-</p>
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/23290?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-23290" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/23290" alt="xingkongliang%2Fskills-manager | Trendshift" width="250" height="55"/></a>
-</p>
-
-<p align="center">
-  <a href="https://skills.sh/xingkongliang/skills-manager"><img src="https://skills.sh/b/xingkongliang/skills-manager" alt="skills.sh 上的 manage-skills" /></a>
 </p>
 
 <p align="center">
@@ -83,17 +63,11 @@
 
 ### macOS
 
-使用 [Homebrew](https://brew.sh) 安装：
-
-```bash
-brew install --cask skills-manager
-```
-
-也可以从 [最新 Release](https://github.com/xingkongliang/skills-manager/releases/latest) 直接下载 `.dmg`。
+从 [最新 Release](https://github.com/anonymous99-Rise/skills-manager/releases/latest) 直接下载 `.dmg`。
 
 ### Windows 和 Linux
 
-从 [最新 Release](https://github.com/xingkongliang/skills-manager/releases/latest) 下载对应平台的安装包：Windows 为 `.exe` 或 `.msi`，Linux 为 `.AppImage`、`.deb` 或 `.rpm`（提供 x64 和 arm64）。
+从 [最新 Release](https://github.com/anonymous99-Rise/skills-manager/releases/latest) 下载对应平台的安装包：Windows 为 `.exe` 或 `.msi`，Linux 为 `.AppImage`、`.deb` 或 `.rpm`（提供 x64 和 arm64）。
 
 所有安装包都自带 CLI，位置见 [二进制放在哪](#二进制放在哪)。
 
@@ -115,7 +89,7 @@ Dashboard 上有一个一次性入口：勾选哪些 Agent 可以这么做，应
 它同时也是一个正常发布的 Skill，不装应用也能直接装：
 
 ```bash
-npx skills add xingkongliang/skills-manager
+npx skills add anonymous99-Rise/skills-manager
 ```
 
 ## 备份与多设备同步
@@ -223,7 +197,7 @@ Windows 版应用无法在 WSL 里建链接，只能复制。如果你的 agent 
 
 ```bash
 mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/skills-manager-cli \
-  https://github.com/xingkongliang/skills-manager/releases/latest/download/skills-manager-cli-Linux-x64
+  https://github.com/anonymous99-Rise/skills-manager/releases/latest/download/skills-manager-cli-Linux-x64
 chmod +x ~/.local/bin/skills-manager-cli
 export PATH="$HOME/.local/bin:$PATH"
 skills-manager-cli agents add-custom hermes-work --path ~/.hermes/profiles/work/skills
@@ -262,15 +236,7 @@ npm run cli:build
 
 **macOS 打不开应用。** 从 **v1.29.0** 起，发布版本都经过 Apple Developer ID 签名与公证，可以正常打开。如果看到「Apple 无法验证…」或「应用已损坏」，说明你用的是 v1.28.5 或更早的版本，升级即可解决。（升级会改变代码签名，macOS 可能会再问一次 `skills-manager-git-backup` 钥匙串权限，点「始终允许」。）
 
-其它问题——[提个 issue](https://github.com/xingkongliang/skills-manager/issues)，并附上 **设置 → 导出日志** 打出来的压缩包。
-
-## Star 增长
-
-<p align="center">
-  <a href="https://github.com/xingkongliang/star-history-svg">
-    <img src="assets/star-history.svg" width="800" alt="xingkongliang/skills-manager 的 Star History 图" />
-  </a>
-</p>
+其它问题——[提个 issue](https://github.com/anonymous99-Rise/skills-manager/issues)，并附上 **设置 → 导出日志** 打出来的压缩包。
 
 ## License
 

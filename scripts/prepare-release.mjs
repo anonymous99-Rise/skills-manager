@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const args = process.argv.slice(2);
@@ -121,14 +120,6 @@ function ensureChangelogEntry(changelog, nextVersion, { zh = false } = {}) {
   return `${changelog.slice(0, firstReleaseHeading)}${entry}${changelog.slice(firstReleaseHeading)}`;
 }
 
-// Refresh the README star-history snapshot. Best-effort: a failure here (no gh
-// auth, no network, no python3) must never block the version bump / changelog.
-function refreshStarHistory() {
-  const script = path.join(root, 'scripts', 'gen-star-history.py');
-  const res = spawnSync('python3', [script], { stdio: 'inherit' });
-  return !res.error && res.status === 0;
-}
-
 function main() {
   const pkg = readJson(packagePath);
   const tauriConf = readJson(tauriConfPath);
@@ -175,8 +166,6 @@ function main() {
   fs.writeFileSync(changelogPath, nextChangelog);
   fs.writeFileSync(changelogZhPath, nextChangelogZh);
 
-  const starOk = refreshStarHistory();
-
   console.log(`Prepared release ${nextVersion}`);
   console.log('Updated:');
   console.log('- CHANGELOG.md');
@@ -189,11 +178,6 @@ function main() {
   for (const { file } of locales) {
     console.log(`- src/i18n/${file}`);
   }
-  console.log(
-    starOk
-      ? '- assets/star-history.svg'
-      : '- assets/star-history.svg (skipped: refresh failed — run `python3 scripts/gen-star-history.py` manually)',
-  );
 }
 
 main();

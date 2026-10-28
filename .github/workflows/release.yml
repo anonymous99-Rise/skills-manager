@@ -291,7 +291,7 @@ jobs:
           }
 
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          verify_bundle "built bundle" "$BUNDLE_DIR/skills-manager.app"
+          verify_bundle "built bundle" "$BUNDLE_DIR/hope-skills-manager.app"
 
           # The .app.tar.gz — not the .app or the .dmg — is what the in-app
           # updater downloads and unpacks over the running install, so it is the
@@ -534,23 +534,3 @@ jobs:
             --repo "${{ github.repository }}" \
             --draft=false
           echo "Published ${{ github.ref_name }}"
-
-      # skillsmanager.dev reads the version and download links from the GitHub
-      # API behind an hourly ISR cache, so a low-traffic page can advertise the
-      # previous release long after it shipped. Rebuilding on publish keeps the
-      # site in step. The hook is optional, and a failed rebuild must not turn a
-      # successful release red — the site catches up on its own within the hour.
-      - name: Rebuild skillsmanager.dev
-        env:
-          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
-        run: |
-          set -uo pipefail
-          if [ -z "${HOOK:-}" ]; then
-            echo "VERCEL_DEPLOY_HOOK_URL not set — skipping site rebuild."
-            exit 0
-          fi
-          if curl -fsS -X POST "$HOOK" -o /dev/null; then
-            echo "Triggered a skillsmanager.dev rebuild."
-          else
-            echo "::warning::Deploy hook failed; skillsmanager.dev will refresh on its own."
-          fi

@@ -112,7 +112,7 @@ else
 fi
 
 echo "═══ install_git direct ═══"
-expect install_git            install_git           "{\"repoUrl\":\"https://github.com/xingkongliang/xingkongliang.git\",\"name\":\"sm-verify-direct\"}" 200
+expect install_git            install_git           "{\"repoUrl\":\"https://github.com/anonymous99-Rise/skills-manager.git\",\"name\":\"sm-verify-direct\"}" 200
 DELID=$(curl -s --noproxy '*' -m 30 -X POST "$BASE/api/invoke/get_managed_skills" -H "Content-Type: application/json" -d '{}' "${auth_args[@]}" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const j=JSON.parse(d);const s=j.find(s=>s.name==='sm-verify-direct');console.log(s?s.id:'')}catch(e){console.log('')}})" 2>/dev/null)
 [ -n "$DELID" ] && expect del_direct_install delete_managed_skill "{\"skillId\":\"$DELID\"}" 200
 

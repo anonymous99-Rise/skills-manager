@@ -5,6 +5,11 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+> **关于本 fork** — Hope Skills Manager 是
+> [xingkongliang/skills-manager](https://github.com/xingkongliang/skills-manager)
+> 的 fork,面向内部使用,增加了 Gitea 集成与无头 Web 服务端。
+> 1.42.0 及之前的条目记录的是上游版本的变更。
+
 ## [1.42.0] - 2026-10-14
 
 ### 发布概览

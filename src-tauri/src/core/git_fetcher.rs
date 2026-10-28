@@ -1931,7 +1931,7 @@ mod tests {
 
     // ── libgit2 tag clone (network; run with `-- --ignored`) ──
 
-    const TAG_REPO: &str = "https://github.com/xingkongliang/skills-manager.git";
+    const TAG_REPO: &str = "https://github.com/anonymous99-Rise/skills-manager.git";
     const TAG_NAME: &str = "v1.36.0";
     const TAG_COMMIT: &str = "824c51e1c09e64a0ace8cff893d7ec8b3e079959";
 
