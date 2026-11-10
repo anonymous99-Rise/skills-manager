@@ -20,8 +20,6 @@ const packageLockPath = path.join(root, 'package-lock.json');
 const tauriConfPath = path.join(root, 'src-tauri', 'tauri.conf.json');
 const cargoTomlPath = path.join(root, 'src-tauri', 'Cargo.toml');
 const cargoLockPath = path.join(root, 'src-tauri', 'Cargo.lock');
-const i18nDir = path.join(root, 'src', 'i18n');
-const i18nFiles = fs.readdirSync(i18nDir).filter((f) => f.endsWith('.json')).sort();
 const changelogPath = path.join(root, 'CHANGELOG.md');
 const changelogZhPath = path.join(root, 'CHANGELOG-zh.md');
 
@@ -60,15 +58,6 @@ function bumpVersion(current, releaseType) {
   }
 
   throw new Error(`Invalid release type/version: ${releaseType}`);
-}
-
-// A locale without settings.version falls back to en's, so only en must have it.
-function updateSettingsVersion(i18nObj, nextVersion, fileLabel) {
-  if (!i18nObj.settings || typeof i18nObj.settings.version !== 'string') {
-    if (fileLabel.endsWith('/en.json')) throw new Error(`Missing settings.version in ${fileLabel}`);
-    return;
-  }
-  i18nObj.settings.version = i18nObj.settings.version.replace(/\d+\.\d+\.\d+/, nextVersion);
 }
 
 function updateCargoPackageVersion(cargoToml, nextVersion) {
@@ -125,7 +114,6 @@ function main() {
   const tauriConf = readJson(tauriConfPath);
   const cargoToml = fs.readFileSync(cargoTomlPath, 'utf8');
   const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
-  const locales = i18nFiles.map((file) => ({ file, json: readJson(path.join(i18nDir, file)) }));
   const changelog = fs.readFileSync(changelogPath, 'utf8');
   const changelogZh = fs.readFileSync(changelogZhPath, 'utf8');
 
@@ -144,9 +132,6 @@ function main() {
   tauriConf.version = nextVersion;
   const nextCargoToml = updateCargoPackageVersion(cargoToml, nextVersion);
   const nextCargoLock = updateCargoLockVersion(cargoLock, nextVersion);
-  for (const { file, json } of locales) {
-    updateSettingsVersion(json, nextVersion, `src/i18n/${file}`);
-  }
   const nextChangelog = ensureChangelogEntry(changelog, nextVersion);
   const nextChangelogZh = ensureChangelogEntry(changelogZh, nextVersion, { zh: true });
 
@@ -160,9 +145,6 @@ function main() {
   writeJson(tauriConfPath, tauriConf);
   fs.writeFileSync(cargoTomlPath, nextCargoToml);
   fs.writeFileSync(cargoLockPath, nextCargoLock);
-  for (const { file, json } of locales) {
-    writeJson(path.join(i18nDir, file), json);
-  }
   fs.writeFileSync(changelogPath, nextChangelog);
   fs.writeFileSync(changelogZhPath, nextChangelogZh);
 
@@ -175,9 +157,6 @@ function main() {
   console.log('- src-tauri/tauri.conf.json');
   console.log('- src-tauri/Cargo.toml');
   console.log('- src-tauri/Cargo.lock');
-  for (const { file } of locales) {
-    console.log(`- src/i18n/${file}`);
-  }
 }
 
 main();

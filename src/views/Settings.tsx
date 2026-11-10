@@ -173,6 +173,7 @@ export function Settings() {
   const [savingCentralRepoPath, setSavingCentralRepoPath] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
   const [gitRemoteInput, setGitRemoteInput] = useState("");
   const [gitRemoteSaving, setGitRemoteSaving] = useState(false);
   const [gitRemoteDisconnecting, setGitRemoteDisconnecting] = useState(false);
@@ -319,6 +320,7 @@ export function Settings() {
   useEffect(() => {
     api.checkLastPanic().then(setLastPanic).catch(() => {});
     api.getCentralRepoWarnings().then(setRepoWarnings).catch(() => {});
+    api.getDiagnosticInfo().then((info) => setAppVersion(info.app_version)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -490,10 +492,27 @@ export function Settings() {
       toast.success(t("settings.repoPathSaved"));
       if (pending) toast.info(t("settings.repoPathRestartNotice"));
     } catch (error) {
-      toast.error(String(error));
+      toast.error(centralRepoPathError(error));
     } finally {
       setSavingCentralRepoPath(false);
     }
+  };
+
+  // The backend refuses a move the next launch could not make as
+  // "<CODE>: <folder>" (`central_repo.rs`). Match the code exactly: the folder
+  // name itself may contain either code.
+  const centralRepoPathError = (error: unknown) => {
+    const message = getErrorMessage(error, t("common.error"));
+    const separator = message.indexOf(": ");
+    const code = separator === -1 ? "" : message.slice(0, separator);
+    const path = compactHomePath(message.slice(separator + 2));
+    if (code === "REPO_TARGET_NOT_EMPTY") {
+      return t("settings.repoPathTargetNotEmpty", { path });
+    }
+    if (code === "REPO_TARGET_INSIDE_LIBRARY") {
+      return t("settings.repoPathTargetInsideLibrary", { path });
+    }
+    return message;
   };
 
   const handleResetCentralRepoPath = async () => {
@@ -508,7 +527,7 @@ export function Settings() {
       toast.success(t("settings.repoPathReset"));
       if (pending) toast.info(t("settings.repoPathRestartNotice"));
     } catch (error) {
-      toast.error(String(error));
+      toast.error(centralRepoPathError(error));
     } finally {
       setSavingCentralRepoPath(false);
     }
@@ -1353,6 +1372,17 @@ export function Settings() {
                   t("settings.repoPathDefaultHint")
                 )}
               </div>
+              {/* Why this session is not on the configured path, next to it. */}
+              {repoWarnings.length > 0 && (
+                <div className="flex w-full items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700 dark:text-amber-300" />
+                  <div className="min-w-0 flex-1 space-y-1 text-[13px] text-amber-800 dark:text-amber-300">
+                    {repoWarnings.map((code) => (
+                      <p key={code}>{t(`settings.repoWarning_${code}`)}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Sync mode */}
@@ -1718,16 +1748,6 @@ export function Settings() {
 
         {/* About */}
         <section className="space-y-2">
-          {repoWarnings.length > 0 && (
-            <div className="app-panel flex flex-wrap items-start gap-2 p-3 border border-amber-500/40 bg-amber-500/10">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700 dark:text-amber-300" />
-              <div className="min-w-0 flex-1 space-y-1 text-[13px] text-amber-800 dark:text-amber-300">
-                {repoWarnings.map((code) => (
-                  <p key={code}>{t(`settings.repoWarning_${code}`)}</p>
-                ))}
-              </div>
-            </div>
-          )}
           {lastPanic && (
             <div className="app-panel flex flex-wrap items-center justify-between gap-2 p-3 border border-red-500/40 bg-red-500/10">
               <div className="flex min-w-0 items-center gap-2 text-[13px] text-red-700 dark:text-red-300">
@@ -1764,7 +1784,9 @@ export function Settings() {
                 <Settings2 className="w-4 h-4 text-accent" />
               </div>
               <div>
-                <h3 className="text-[13px] font-semibold text-primary">{t("settings.version")}</h3>
+                <h3 className="text-[13px] font-semibold text-primary">
+                  {t("settings.version", { version: appVersion }).trim()}
+                </h3>
                 <p className="text-muted text-[13px]">
                   {t("settings.tagline")}
                   {appUpdate?.has_update && (

@@ -45,6 +45,9 @@ uuid = { version = "1", features = ["v4", "v7"] }
 walkdir = "2.5"
 zip = "2"
 
+[target.'cfg(windows)'.dependencies]
+junction = "2"
+
 [profile.release]
 strip = true
 lto = "thin"

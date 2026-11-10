@@ -73,6 +73,21 @@ fn unsync_skill_for_tool_in_preset(
     store.delete_target(skill_id, tool).map_err(AppError::db)
 }
 
+/// The one-pair case of [`scenario_service::set_active_preset_tool_toggles`].
+fn set_active_preset_tool_toggle(
+    store: &SkillStore,
+    skill_id: &str,
+    tool: &str,
+    enabled: bool,
+) -> Result<(), AppError> {
+    scenario_service::set_active_preset_tool_toggles(
+        store,
+        &[skill_id.to_string()],
+        &[tool.to_string()],
+        enabled,
+    )
+}
+
 #[tauri::command]
 pub async fn sync_skill_to_tool(
     app: AppHandle,
@@ -82,30 +97,8 @@ pub async fn sync_skill_to_tool(
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let outcome = (|| -> Result<(), AppError> {
-            sync_skill_to_tool_internal(&store, &skill_id, &tool)?;
-
-            if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-                let skill_ids = store
-                    .get_skill_ids_for_scenario(&active_id)
-                    .map_err(AppError::db)?;
-                if skill_ids.contains(&skill_id) {
-                    let adapter_keys: Vec<String> =
-                        tool_adapters::enabled_installed_adapters(&store)
-                            .iter()
-                            .map(|a| a.key.clone())
-                            .collect();
-                    store
-                        .ensure_scenario_skill_tool_defaults(&active_id, &skill_id, &adapter_keys)
-                        .map_err(AppError::db)?;
-                    store
-                        .set_scenario_skill_tool_enabled(&active_id, &skill_id, &tool, true)
-                        .map_err(AppError::db)?;
-                }
-            }
-
-            Ok(())
-        })();
+        let outcome = sync_skill_to_tool_internal(&store, &skill_id, &tool)
+            .and_then(|()| set_active_preset_tool_toggle(&store, &skill_id, &tool, true));
         log_sync_outcome(&store, "enable", &skill_id, &tool, outcome.as_ref());
         outcome
     })
@@ -114,6 +107,60 @@ pub async fn sync_skill_to_tool(
         schedule_tray_refresh(&app);
     }
     result
+}
+
+fn unsync_skill_from_tool_internal(
+    store: &SkillStore,
+    skill_id: &str,
+    tool: &str,
+) -> Result<(), AppError> {
+    let targets = store
+        .get_targets_for_skill(skill_id)
+        .map_err(AppError::db)?;
+
+    // Toggling a skill off is the GUI twin of `skills undeploy`, so it
+    // needs the same protection: the row says we deployed here, but if
+    // the user has since replaced our artifact with content of their
+    // own, that content is not ours to delete (#363).
+    if let Some(target) = targets.iter().find(|t| t.tool == tool) {
+        let target_path = PathBuf::from(&target.target_path);
+        // Several tools can resolve to one skills directory, so this
+        // exact path may still be deployed for another (skill, tool)
+        // that is staying. `apply_remove` has this survivor check;
+        // without it here, switching agent A off deletes agent B's
+        // live deployment.
+        let still_referenced = store
+            .get_all_targets()
+            .map_err(AppError::db)?
+            .into_iter()
+            .any(|other| {
+                other.target_path == target.target_path
+                    && !(other.skill_id == skill_id && other.tool == tool)
+            });
+        if still_referenced {
+            log::debug!(
+                "unsync: keeping {} (still referenced by another target)",
+                target_path.display()
+            );
+        } else {
+            match sync_engine::remove_recorded_target(&target_path, &target.mode) {
+                Ok(true) => {}
+                Ok(false) => log::warn!(
+                    "unsync: preserving {} — no longer matches its recorded {} deployment; \
+                     removing the record only",
+                    target_path.display(),
+                    target.mode
+                ),
+                Err(e) => {
+                    log::warn!("unsync: failed to remove {}: {e}", target_path.display())
+                }
+            }
+        }
+    }
+
+    store.delete_target(skill_id, tool).map_err(AppError::db)?;
+
+    set_active_preset_tool_toggle(store, skill_id, tool, false)
 }
 
 #[tauri::command]
@@ -125,76 +172,7 @@ pub async fn unsync_skill_from_tool(
 ) -> Result<(), AppError> {
     let store = store.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let outcome = (|| -> Result<(), AppError> {
-            let targets = store
-                .get_targets_for_skill(&skill_id)
-                .map_err(AppError::db)?;
-
-            // Toggling a skill off is the GUI twin of `skills undeploy`, so it
-            // needs the same protection: the row says we deployed here, but if
-            // the user has since replaced our artifact with content of their
-            // own, that content is not ours to delete (#363).
-            if let Some(target) = targets.iter().find(|t| t.tool == tool) {
-                let target_path = PathBuf::from(&target.target_path);
-                // Several tools can resolve to one skills directory, so this
-                // exact path may still be deployed for another (skill, tool)
-                // that is staying. `apply_remove` has this survivor check;
-                // without it here, switching agent A off deletes agent B's
-                // live deployment.
-                let still_referenced = store
-                    .get_all_targets()
-                    .map_err(AppError::db)?
-                    .into_iter()
-                    .any(|other| {
-                        other.target_path == target.target_path
-                            && !(other.skill_id == skill_id && other.tool == tool)
-                    });
-                if still_referenced {
-                    log::debug!(
-                        "unsync: keeping {} (still referenced by another target)",
-                        target_path.display()
-                    );
-                } else {
-                    match sync_engine::remove_recorded_target(&target_path, &target.mode) {
-                        Ok(true) => {}
-                        Ok(false) => log::warn!(
-                            "unsync: preserving {} — no longer matches its recorded {} deployment; \
-                             removing the record only",
-                            target_path.display(),
-                            target.mode
-                        ),
-                        Err(e) => {
-                            log::warn!("unsync: failed to remove {}: {e}", target_path.display())
-                        }
-                    }
-                }
-            }
-
-            store
-                .delete_target(&skill_id, &tool)
-                .map_err(AppError::db)?;
-
-            if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-                let skill_ids = store
-                    .get_skill_ids_for_scenario(&active_id)
-                    .map_err(AppError::db)?;
-                if skill_ids.contains(&skill_id) {
-                    let adapter_keys: Vec<String> =
-                        tool_adapters::enabled_installed_adapters(&store)
-                            .iter()
-                            .map(|a| a.key.clone())
-                            .collect();
-                    store
-                        .ensure_scenario_skill_tool_defaults(&active_id, &skill_id, &adapter_keys)
-                        .map_err(AppError::db)?;
-                    store
-                        .set_scenario_skill_tool_enabled(&active_id, &skill_id, &tool, false)
-                        .map_err(AppError::db)?;
-                }
-            }
-
-            Ok(())
-        })();
+        let outcome = unsync_skill_from_tool_internal(&store, &skill_id, &tool);
         log_sync_outcome(&store, "disable", &skill_id, &tool, outcome.as_ref());
         outcome
     })
@@ -354,7 +332,8 @@ pub async fn set_skill_tool_toggle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::skill_store::SkillRecord;
+    use crate::core::central_repo;
+    use crate::core::skill_store::{ScenarioRecord, SkillRecord};
     use crate::core::tool_adapters::CustomToolDef;
     use std::fs;
     use tempfile::tempdir;
@@ -621,6 +600,190 @@ mod tests {
         let remaining = store.get_targets_for_skill("s1").unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].tool, "agent_b");
+    }
+
+    struct ActivePresetRepo {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        store: SkillStore,
+        deployed: PathBuf,
+    }
+
+    impl Drop for ActivePresetRepo {
+        fn drop(&mut self) {
+            central_repo::set_test_base_dir_override(None);
+        }
+    }
+
+    /// One skill in the active preset, deployed to `test_agent` by the startup
+    /// sync, with the sync metadata written: the state of a running app.
+    fn deployed_active_preset_repo() -> ActivePresetRepo {
+        let lock = central_repo::test_base_dir_lock();
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("repo");
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        fs::create_dir_all(central_repo::skills_dir()).unwrap();
+        let store = SkillStore::new(&base.join("test.db")).unwrap();
+        let target_base = tmp.path().join("agent-skills");
+        fs::create_dir_all(&target_base).unwrap();
+        configure_single_custom_tool(&store, &target_base);
+
+        let dir = write_skill_dir(&central_repo::skills_dir(), "my-skill", "content");
+        store
+            .insert_skill(&sample_skill("s1", "my-skill", &dir))
+            .unwrap();
+        store
+            .insert_scenario(&ScenarioRecord {
+                id: "active".to_string(),
+                name: "Active".to_string(),
+                description: None,
+                icon: None,
+                sort_order: 0,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        store.add_skill_to_scenario("active", "s1").unwrap();
+        store.set_active_scenario("active").unwrap();
+        scenario_service::ensure_default_startup_scenario(&store).unwrap();
+        sync_metadata::write_all_from_db(&store).unwrap();
+
+        let deployed = target_base.join("my-skill");
+        assert!(deployed.exists());
+        ActivePresetRepo {
+            _lock: lock,
+            _tmp: tmp,
+            store,
+            deployed,
+        }
+    }
+
+    /// What the next launch does before the window opens.
+    fn restart(store: &SkillStore) {
+        sync_metadata::reindex_from_metadata(store).unwrap();
+        scenario_service::ensure_default_startup_scenario(store).unwrap();
+    }
+
+    /// #549: removing an active-preset skill from one agent in the workspace
+    /// view turned its toggle off in the database only. The next launch
+    /// reindexed the old toggle from the sync metadata, and the startup sync
+    /// deployed the skill again.
+    #[test]
+    fn removed_active_preset_skill_stays_removed_after_restart() {
+        let repo = deployed_active_preset_repo();
+
+        unsync_skill_from_tool_internal(&repo.store, "s1", "test_agent").unwrap();
+        assert!(!repo.deployed.exists());
+
+        restart(&repo.store);
+
+        assert!(
+            !repo.deployed.exists(),
+            "the removed skill was deployed again on restart"
+        );
+    }
+
+    /// The same gap in the other direction: adding it back was forgotten on
+    /// restart, leaving the agent's toggle off while the skill is deployed.
+    #[test]
+    fn readded_active_preset_skill_stays_enabled_after_restart() {
+        let repo = deployed_active_preset_repo();
+        // Off and persisted, the way the skill detail panel's toggle does it.
+        repo.store
+            .set_scenario_skill_tool_enabled("active", "s1", "test_agent", false)
+            .unwrap();
+        sync_metadata::write_all_from_db(&repo.store).unwrap();
+        unsync_skill_for_tool_in_preset(&repo.store, "s1", "test_agent").unwrap();
+
+        sync_skill_to_tool_internal(&repo.store, "s1", "test_agent").unwrap();
+        set_active_preset_tool_toggle(&repo.store, "s1", "test_agent", true).unwrap();
+        restart(&repo.store);
+
+        assert_eq!(
+            repo.store
+                .get_enabled_tools_for_scenario_skill("active", "s1")
+                .unwrap(),
+            vec!["test_agent".to_string()]
+        );
+    }
+
+    /// The tray's remove action and the CLI's `presets undeploy` / `skills
+    /// undeploy` go through the batch remove, which left the active preset's
+    /// toggles on: the next launch deployed the skill again (#549).
+    #[test]
+    fn batch_removed_active_preset_skill_stays_removed_after_restart() {
+        let repo = deployed_active_preset_repo();
+
+        scenario_service::apply_skills_to_tools(
+            &repo.store,
+            &["s1".to_string()],
+            &["test_agent".to_string()],
+            scenario_service::BatchApplyMode::Remove,
+        )
+        .unwrap();
+        assert!(!repo.deployed.exists());
+
+        restart(&repo.store);
+
+        assert!(
+            !repo.deployed.exists(),
+            "the removed skill was deployed again on restart"
+        );
+    }
+
+    /// Removing from an agent the skill was never deployed to (the tray
+    /// removes from every coding agent) must also keep the next launch from
+    /// deploying it there.
+    #[test]
+    fn batch_remove_from_an_undeployed_agent_keeps_it_off_after_restart() {
+        let repo = deployed_active_preset_repo();
+        repo.store.delete_target("s1", "test_agent").unwrap();
+        fs::remove_dir_all(&repo.deployed).unwrap();
+
+        scenario_service::apply_skills_to_tools(
+            &repo.store,
+            &["s1".to_string()],
+            &["test_agent".to_string()],
+            scenario_service::BatchApplyMode::Remove,
+        )
+        .unwrap();
+        restart(&repo.store);
+
+        assert!(!repo.deployed.exists());
+    }
+
+    /// Deploying it again must turn the toggle back on, or the preview and the
+    /// startup sync keep ignoring a skill that is deployed.
+    #[test]
+    fn batch_redeployed_active_preset_skill_is_back_in_the_preset_after_restart() {
+        let repo = deployed_active_preset_repo();
+        let skill = ["s1".to_string()];
+        let agent = ["test_agent".to_string()];
+        scenario_service::apply_skills_to_tools(
+            &repo.store,
+            &skill,
+            &agent,
+            scenario_service::BatchApplyMode::Remove,
+        )
+        .unwrap();
+
+        scenario_service::apply_skills_to_tools(
+            &repo.store,
+            &skill,
+            &agent,
+            scenario_service::BatchApplyMode::Add,
+        )
+        .unwrap();
+        restart(&repo.store);
+
+        assert!(repo.deployed.exists());
+        let preview = scenario_service::preview_scenario_sync(&repo.store, "active").unwrap();
+        assert!(
+            preview
+                .iter()
+                .any(|target| target.skill_id == "s1" && target.tool == "test_agent"),
+            "the redeployed skill is missing from the preset: {preview:?}"
+        );
     }
 
     #[test]

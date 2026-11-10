@@ -300,6 +300,17 @@ impl SkillStore {
         Ok(())
     }
 
+    /// Record a newer revision for content that did not change. `updated_at` is
+    /// left alone: nothing in the library was touched.
+    pub fn update_skill_source_revision(&self, id: &str, source_revision: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE skills SET source_revision = ?1 WHERE id = ?2",
+            params![source_revision, id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_skill_check_state(
         &self,
         id: &str,
@@ -432,6 +443,27 @@ impl SkillStore {
         conn.execute(
             "UPDATE skills SET central_path = 'sm-reindex-parked://' || id",
             [],
+        )?;
+        Ok(())
+    }
+
+    /// `skill_id → (stamp, content_hash)` as the reindex last recorded them.
+    pub fn get_content_stamps(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT skill_id, stamp, content_hash FROM skill_content_stamps")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn set_content_stamp(&self, skill_id: &str, stamp: &str, content_hash: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO skill_content_stamps (skill_id, stamp, content_hash)
+             VALUES (?1, ?2, ?3)",
+            params![skill_id, stamp, content_hash],
         )?;
         Ok(())
     }

@@ -23,7 +23,7 @@ static TRAY_PRESET_APPLY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// tray menu can render a disabled "Checking for updates..." label.
 static TRAY_CHECK_UPDATES_RUNNING: AtomicBool = AtomicBool::new(false);
 
-const MAIN_TRAY_ID: &str = "main-tray";
+const MAIN_TRAY_ID: &str = "skills-manager-tray";
 const TRAY_PRESET_ADD_PREFIX: &str = "tray-preset-add:";
 const TRAY_PRESET_REMOVE_PREFIX: &str = "tray-preset-remove:";
 const TRAY_OPEN_UPDATES_ID: &str = "tray-open-updates";

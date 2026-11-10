@@ -28,6 +28,8 @@ pub mod file_manager;
 pub mod git2_engine;
 #[path = "../../../src-tauri/src/core/git_backup.rs"]
 pub mod git_backup;
+#[path = "../../../src-tauri/src/core/git_command.rs"]
+mod git_command;
 #[path = "../../../src-tauri/src/core/git_credentials.rs"]
 pub mod git_credentials;
 #[path = "../../../src-tauri/src/core/git_fetcher.rs"]

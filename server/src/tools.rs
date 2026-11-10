@@ -3,7 +3,7 @@
 //! dropped; everything else mirrors the desktop implementation.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -23,6 +23,13 @@ use crate::core::{
 };
 
 fn unsync_all_for_tool(store: &SkillStore, tool_key: &str) {
+    release_tool_targets(store, tool_key, None);
+}
+
+/// Drop every target record of `tool_key`. With `new_dir`, the tool has just
+/// moved there: deployments outside it sit at a path the tool no longer reads
+/// and are released (copies moved into the library) rather than removed.
+fn release_tool_targets(store: &SkillStore, tool_key: &str, new_dir: Option<&Path>) {
     let targets = store.get_all_targets().unwrap_or_default();
     for target in targets.iter().filter(|t| t.tool == tool_key) {
         // Tools can share one skills directory; another tool's live
@@ -31,10 +38,15 @@ fn unsync_all_for_tool(store: &SkillStore, tool_key: &str) {
             .iter()
             .any(|other| other.tool != tool_key && other.target_path == target.target_path);
         if !still_referenced {
-            sync_engine::remove_recorded_target_or_warn(
-                &PathBuf::from(&target.target_path),
-                &target.mode,
-            );
+            let path = PathBuf::from(&target.target_path);
+            match new_dir {
+                Some(dir) if path.parent() != Some(dir) => {
+                    scenario_service::release_abandoned_target(&path, &target.mode, tool_key);
+                }
+                _ => {
+                    sync_engine::remove_recorded_target_or_warn(&path, &target.mode);
+                }
+            }
         }
         store.delete_target(&target.skill_id, tool_key).ok();
     }
@@ -45,7 +57,9 @@ fn sync_active_scenario_to_tool(store: &SkillStore, tool_key: &str) {
 }
 
 fn reconcile_tool_sync_after_path_change(store: &SkillStore, tool_key: &str) {
-    unsync_all_for_tool(store, tool_key);
+    // Release the deployments at the old path, then re-sync to the current one.
+    let new_dir = tool_adapters::find_adapter_with_store(store, tool_key).map(|a| a.skills_dir());
+    release_tool_targets(store, tool_key, new_dir.as_deref());
     let disabled = get_disabled_tools(store);
     if !disabled.contains(&tool_key.to_string()) {
         sync_active_scenario_to_tool(store, tool_key);
@@ -282,25 +296,12 @@ pub fn sync_skill_to_tool_impl(
     tool: &str,
 ) -> Result<(), AppError> {
     sync_skill_to_tool_internal(store, skill_id, tool)?;
-
-    if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-        let skill_ids = store
-            .get_skill_ids_for_scenario(&active_id)
-            .map_err(AppError::db)?;
-        if skill_ids.contains(&skill_id.to_string()) {
-            let adapter_keys: Vec<String> = tool_adapters::enabled_installed_adapters(store)
-                .iter()
-                .map(|a| a.key.clone())
-                .collect();
-            store
-                .ensure_scenario_skill_tool_defaults(&active_id, skill_id, &adapter_keys)
-                .map_err(AppError::db)?;
-            store
-                .set_scenario_skill_tool_enabled(&active_id, skill_id, tool, true)
-                .map_err(AppError::db)?;
-        }
-    }
-    Ok(())
+    scenario_service::set_active_preset_tool_toggles(
+        store,
+        &[skill_id.to_string()],
+        &[tool.to_string()],
+        true,
+    )
 }
 
 pub fn unsync_skill_from_tool_impl(
@@ -340,25 +341,12 @@ pub fn unsync_skill_from_tool_impl(
     }
 
     store.delete_target(skill_id, tool).map_err(AppError::db)?;
-
-    if let Ok(Some(active_id)) = store.get_active_scenario_id() {
-        let skill_ids = store
-            .get_skill_ids_for_scenario(&active_id)
-            .map_err(AppError::db)?;
-        if skill_ids.contains(&skill_id.to_string()) {
-            let adapter_keys: Vec<String> = tool_adapters::enabled_installed_adapters(store)
-                .iter()
-                .map(|a| a.key.clone())
-                .collect();
-            store
-                .ensure_scenario_skill_tool_defaults(&active_id, skill_id, &adapter_keys)
-                .map_err(AppError::db)?;
-            store
-                .set_scenario_skill_tool_enabled(&active_id, skill_id, tool, false)
-                .map_err(AppError::db)?;
-        }
-    }
-    Ok(())
+    scenario_service::set_active_preset_tool_toggles(
+        store,
+        &[skill_id.to_string()],
+        &[tool.to_string()],
+        false,
+    )
 }
 
 pub fn get_skill_tool_toggles_impl(

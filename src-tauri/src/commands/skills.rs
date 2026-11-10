@@ -15,7 +15,7 @@ use crate::core::{
     install_cancel::InstallCancelRegistry,
     installer, path_guard,
     repo_lock::RepoLock,
-    scanner,
+    scanner, scenario_service,
     skill_metadata::{self, is_valid_skill_dir},
     skill_store::{SkillRecord, SkillStore, SkillTargetRecord},
     sync_engine, sync_metadata,
@@ -191,6 +191,12 @@ pub struct BatchUpdateSkillsResult {
 pub struct BatchDeleteSkillsResult {
     pub deleted: usize,
     pub failed: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstallLocalResult {
+    pub skill_id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -994,7 +1000,7 @@ pub async fn install_local(
     source_path: String,
     name: Option<String>,
     store: State<'_, Arc<SkillStore>>,
-) -> Result<(), AppError> {
+) -> Result<InstallLocalResult, AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = (|| -> Result<(String, String), AppError> {
@@ -1020,7 +1026,7 @@ pub async fn install_local(
             Ok((skill_id, skill_name))
         })();
         log_install_outcome(&store, "local", outcome.as_ref());
-        outcome.map(|_| ())
+        outcome.map(|(skill_id, name)| InstallLocalResult { skill_id, name })
     })
     .await?
 }
@@ -1611,8 +1617,9 @@ pub async fn check_all_skill_updates(
         // off the central-repo lock so a slow remote (e.g. vercel/ai's ref
         // advertisement runs ~30s) never starves a concurrent check into a 20s
         // lock-timeout "busy" failure — the reason "检查全部" both crawled and
-        // popped failures.
-        let mut remotes: HashSet<RemoteKey> = HashSet::new();
+        // popped failures. Each remote also carries its subpath skills' installed
+        // directories, so the monorepo siblings share one subtree fetch (#561).
+        let mut remotes: HashMap<RemoteKey, HashSet<(String, String)>> = HashMap::new();
         for skill in &skills {
             if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
                 continue;
@@ -1630,13 +1637,17 @@ pub async fn check_all_skill_updates(
                 ),
             }
             if let Ok(source) = git_source_from_skill(skill) {
-                remotes.insert(RemoteKey::from(source));
+                let installed = installed_subtree(skill, &source);
+                remotes
+                    .entry(RemoteKey::from(source))
+                    .or_default()
+                    .extend(installed);
             }
         }
         let remote_revisions = if remotes.is_empty() {
             HashMap::new()
         } else {
-            resolve_remotes_concurrent(remotes.into_iter().collect(), proxy_url.clone())
+            resolve_remotes_concurrent(remotes, proxy_url.clone())
         };
 
         // ── Phase B: apply the resolved revisions + local-source checks ──
@@ -1653,13 +1664,9 @@ pub async fn check_all_skill_updates(
         let mut failed = Vec::new();
         for skill in &skills {
             let prefetched = if matches!(skill.source_type.as_str(), "git" | "skillssh") {
-                git_source_from_skill(skill).ok().and_then(|source| {
-                    let key = RemoteKey::from(source);
-                    remote_revisions
-                        .get(&key)
-                        .cloned()
-                        .map(|result| PrefetchedRemote { key, result })
-                })
+                git_source_from_skill(skill)
+                    .ok()
+                    .and_then(|source| remote_revisions.get(&RemoteKey::from(source)).cloned())
             } else {
                 None
             };
@@ -1729,6 +1736,48 @@ impl RemoteKey {
 pub struct PrefetchedRemote {
     key: RemoteKey,
     result: Result<String, String>,
+    /// The `(source_revision, subpath)` pairs whose directory is the same tree
+    /// at the resolved revision — see [`git_fetcher::unchanged_subtrees`].
+    unchanged: HashSet<(String, String)>,
+    /// Why those directories could not be compared. A resolved head alone
+    /// does not establish whether an installed subtree changed.
+    comparison_error: Option<String>,
+}
+
+/// The directory a subpath skill was installed from, as `(revision, subpath)`.
+/// `None` for a skill installed from the repository root, which keeps comparing
+/// the whole repository's head.
+fn installed_subtree(skill: &SkillRecord, source: &GitSkillSource) -> Option<(String, String)> {
+    let subpath = source.subpath.as_deref().filter(|s| !s.is_empty())?;
+    Some((skill.source_revision.clone()?, subpath.to_string()))
+}
+
+/// Resolve `key`'s head, then which of `installed` it leaves unchanged.
+fn resolve_remote(
+    key: RemoteKey,
+    installed: &HashSet<(String, String)>,
+    proxy_url: Option<&str>,
+) -> PrefetchedRemote {
+    let resolve = || {
+        git_fetcher::resolve_remote_revision(&key.clone_url, key.branch.as_deref(), proxy_url)
+            .map_err(|err| err.to_string())
+    };
+    let result = resolve();
+    let (unchanged, comparison_error) = match &result {
+        Ok(head) => {
+            match git_fetcher::unchanged_subtrees(&key.clone_url, head, installed, proxy_url) {
+                Ok(unchanged) => (unchanged, None),
+                Err(err) => (HashSet::new(), Some(err.to_string())),
+            }
+        }
+        Err(_) => (HashSet::new(), None),
+    };
+    PrefetchedRemote {
+        key,
+        result,
+        unchanged,
+        comparison_error,
+    }
 }
 
 /// Resolve one skill's remote revision *before* the caller takes the
@@ -1752,11 +1801,13 @@ pub fn prefetch_skill_remote(
     if should_skip_update_check(store, &skill, force).unwrap_or(false) {
         return None;
     }
-    let key = RemoteKey::from(git_source_from_skill(&skill).ok()?);
-    let result =
-        git_fetcher::resolve_remote_revision(&key.clone_url, key.branch.as_deref(), proxy_url)
-            .map_err(|err| err.to_string());
-    Some(PrefetchedRemote { key, result })
+    let source = git_source_from_skill(&skill).ok()?;
+    let installed = installed_subtree(&skill, &source).into_iter().collect();
+    Some(resolve_remote(
+        RemoteKey::from(source),
+        &installed,
+        proxy_url,
+    ))
 }
 
 /// Upper bound on concurrent `ls-remote` queries during a batch check. Collapses
@@ -1769,16 +1820,11 @@ const MAX_CHECK_CONCURRENCY: usize = 8;
 /// `Err(message)` so Phase B can mark just that remote's skills as errored
 /// without aborting the batch.
 fn resolve_remotes_concurrent(
-    remotes: Vec<RemoteKey>,
+    remotes: HashMap<RemoteKey, HashSet<(String, String)>>,
     proxy_url: Option<String>,
-) -> HashMap<RemoteKey, Result<String, String>> {
-    resolve_concurrent(remotes, |key| {
-        git_fetcher::resolve_remote_revision(
-            &key.clone_url,
-            key.branch.as_deref(),
-            proxy_url.as_deref(),
-        )
-        .map_err(|err| err.to_string())
+) -> HashMap<RemoteKey, PrefetchedRemote> {
+    resolve_concurrent(remotes.keys().cloned().collect(), |key| {
+        resolve_remote(key.clone(), &remotes[key], proxy_url.as_deref())
     })
 }
 
@@ -1789,18 +1835,15 @@ fn resolve_remotes_concurrent(
 /// exactly once, a per-remote failure is stored as `Err` rather than aborting the
 /// batch, and — since this function never touches `RepoLock` — resolution always
 /// runs off the central-repo lock.
-fn resolve_concurrent<F>(
-    remotes: Vec<RemoteKey>,
-    resolve: F,
-) -> HashMap<RemoteKey, Result<String, String>>
+fn resolve_concurrent<T, F>(remotes: Vec<RemoteKey>, resolve: F) -> HashMap<RemoteKey, T>
 where
-    F: Fn(&RemoteKey) -> Result<String, String> + Sync,
+    T: Send,
+    F: Fn(&RemoteKey) -> T + Sync,
 {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let next = AtomicUsize::new(0);
-    let results: Mutex<HashMap<RemoteKey, Result<String, String>>> =
-        Mutex::new(HashMap::with_capacity(remotes.len()));
+    let results: Mutex<HashMap<RemoteKey, T>> = Mutex::new(HashMap::with_capacity(remotes.len()));
     let worker_count = MAX_CHECK_CONCURRENCY.min(remotes.len().max(1));
 
     std::thread::scope(|scope| {
@@ -2870,9 +2913,12 @@ pub fn check_skill_update_internal_with_remote(
             // central-repo lock, and a network call under that lock is the
             // 20s "busy" failure the off-lock split exists to remove (#315).
             // The next round picks the skill up.
-            let Some(remote_result) = prefetched
-                .filter(|prefetched| prefetched.key.matches(&git_source))
-                .map(|prefetched| prefetched.result)
+            let Some(PrefetchedRemote {
+                result: remote_result,
+                unchanged,
+                comparison_error,
+                ..
+            }) = prefetched.filter(|prefetched| prefetched.key.matches(&git_source))
             else {
                 log::debug!(
                     "check update: no usable prefetched remote for {}, skipping this round",
@@ -2882,8 +2928,40 @@ pub fn check_skill_update_internal_with_remote(
             };
             match remote_result {
                 Ok(remote_revision) => {
+                    // The repo moved, and the comparison that answers for this
+                    // skill's directory failed (#582). That
+                    // says nothing about the skill, so it is not an update:
+                    // record a failed check, as for a head that could not be
+                    // resolved, and let the next round ask again.
+                    if let Some(message) = comparison_error.filter(|_| {
+                        skill.source_revision.as_deref() != Some(remote_revision.as_str())
+                            && installed_subtree(&skill, &git_source).is_some()
+                    }) {
+                        store
+                            .update_skill_check_state(
+                                &skill.id,
+                                Some(&remote_revision),
+                                "error",
+                                Some(&message),
+                            )
+                            .map_err(AppError::db)?;
+                        return Err(AppError::git(message));
+                    }
                     let update_status = match skill.source_revision.as_deref() {
                         Some(current) if current == remote_revision => "up_to_date",
+                        // The repo moved but this skill's directory did not
+                        // (#561). Record the new head as its source, as an
+                        // update that changed nothing would, so the next
+                        // check compares from there without fetching again.
+                        Some(_)
+                            if installed_subtree(&skill, &git_source)
+                                .is_some_and(|installed| unchanged.contains(&installed)) =>
+                        {
+                            store
+                                .update_skill_source_revision(&skill.id, &remote_revision)
+                                .map_err(AppError::db)?;
+                            "up_to_date"
+                        }
                         Some(_) => "update_available",
                         None => "unknown",
                     };
@@ -3293,6 +3371,16 @@ pub fn resync_copy_targets(store: &SkillStore, skill_id: &str) -> Result<(), App
 
     for target in targets {
         if target.mode != "copy" {
+            continue;
+        }
+        // An update that changed no content leaves the copies alone.
+        if scenario_service::recorded_target_is_current(
+            Some(&target),
+            &source,
+            Path::new(&target.target_path),
+            sync_engine::SyncMode::Copy,
+            skill.content_hash.as_deref(),
+        ) {
             continue;
         }
 
@@ -4016,7 +4104,7 @@ mod tests {
 
         let out = resolve_concurrent(remotes.clone(), |key| {
             calls.fetch_add(1, Ordering::Relaxed);
-            Ok(format!("rev:{}", key.clone_url))
+            Ok::<_, String>(format!("rev:{}", key.clone_url))
         });
 
         assert_eq!(
@@ -4066,7 +4154,7 @@ mod tests {
             peak.fetch_max(now, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(20));
             in_flight.fetch_sub(1, Ordering::SeqCst);
-            Ok("rev".to_string())
+            Ok::<_, String>("rev".to_string())
         });
 
         assert_eq!(out.len(), 8);
@@ -4095,6 +4183,8 @@ mod tests {
         Some(PrefetchedRemote {
             key: remote(url, None),
             result: Ok(revision.to_string()),
+            unchanged: HashSet::new(),
+            comparison_error: None,
         })
     }
 
@@ -4258,6 +4348,8 @@ mod tests {
             Some(PrefetchedRemote {
                 key: remote("https://example.test/a.git", None),
                 result: Err("could not read from remote".to_string()),
+                unchanged: HashSet::new(),
+                comparison_error: None,
             }),
         )
         .unwrap_err();
@@ -4269,6 +4361,66 @@ mod tests {
             stored.last_check_error.as_deref(),
             Some("could not read from remote")
         );
+    }
+
+    /// A head that resolved, followed by a failed subtree comparison (#582).
+    fn prefetch_comparison_error(url: &str, revision: &str, reason: &str) -> Option<PrefetchedRemote> {
+        Some(PrefetchedRemote {
+            comparison_error: Some(reason.to_string()),
+            ..prefetch(url, revision).unwrap()
+        })
+    }
+
+    /// The repo moved, but whether a subpath skill's directory moved with it
+    /// was never established: the comparison failed. That
+    /// is a failed check, like a head that could not be resolved — not an
+    /// update, which the badge, the notification and auto-update would act on.
+    /// The installed revision stays, so the next round compares again.
+    #[test]
+    fn a_failed_subtree_comparison_records_a_failed_check() {
+        let repo = test_repo();
+        let url = "https://example.test/a.git";
+        insert_monorepo_skill(&repo.store, "a", url, Some("skills/a"), "old-rev");
+        let reason = "fatal: unable to access: SSL_connect: SSL_ERROR_SYSCALL";
+
+        let err = check_skill_update_internal_with_remote(
+            &repo.store,
+            "a",
+            false,
+            prefetch_comparison_error(url, "new-rev", reason),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.message, reason);
+        let stored = repo.store.get_skill_by_id("a").unwrap().unwrap();
+        assert_eq!(stored.update_status, "error");
+        assert_eq!(stored.last_check_error.as_deref(), Some(reason));
+        assert_eq!(stored.source_revision.as_deref(), Some("old-rev"));
+        assert_eq!(stored.remote_revision.as_deref(), Some("new-rev"));
+    }
+
+    /// The comparison only ever answers for a subpath skill whose revision is
+    /// behind the head. A skill installed from the repository root still sees
+    /// the moved head as its update, and a subpath skill already at the head
+    /// is up to date, whatever became of the comparison.
+    #[test]
+    fn a_failed_comparison_leaves_skills_it_does_not_answer_for() {
+        let repo = test_repo();
+        let url = "https://example.test/a.git";
+        insert_monorepo_skill(&repo.store, "root", url, None, "old-rev");
+        insert_monorepo_skill(&repo.store, "current", url, Some("skills/b"), "new-rev");
+        let check = |id: &str| {
+            check_skill_update_internal_with_remote(
+                &repo.store,
+                id,
+                false,
+                prefetch_comparison_error(url, "new-rev", "remote unreachable"),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(check("root").update_status, "update_available");
+        assert_eq!(check("current").update_status, "up_to_date");
     }
 
     /// Callers hold the central-repo lock across this write, so a git skill with
@@ -4286,6 +4438,148 @@ mod tests {
         assert_eq!(dto.update_status, "unknown");
         let stored = repo.store.get_skill_by_id("skill-1").unwrap().unwrap();
         assert_eq!(stored.last_checked_at, None, "no network, no write");
+    }
+
+    // ── Subpath skills of one monorepo (#561) ──
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .expect("git must be runnable");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// `file://` wants forward slashes and, on Windows, a slash before the drive.
+    fn file_url(path: &Path) -> String {
+        let raw = path.display().to_string().replace('\\', "/");
+        if raw.starts_with('/') {
+            format!("file://{raw}")
+        } else {
+            format!("file:///{raw}")
+        }
+    }
+
+    /// A repository holding a root skill and two sibling skills, `skills/a` and
+    /// `skills/b`, served over `file://`. Returns its path, URL and first commit.
+    fn monorepo(repo: &TestRepo) -> (PathBuf, String, String) {
+        let dir = repo._tmp.path().join("monorepo");
+        write_skill(&dir, "root");
+        write_skill(&dir.join("skills/a"), "a");
+        write_skill(&dir.join("skills/b"), "b");
+        git_in(&dir, &["init", "-q"]);
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-qm", "init"]);
+        // The blobless fetch is served by this repo, so the switch belongs here.
+        git_in(&dir, &["config", "uploadpack.allowFilter", "true"]);
+        let first = git_in(&dir, &["rev-parse", "HEAD"]);
+        let url = file_url(&dir);
+        (dir, url, first)
+    }
+
+    fn commit_file(dir: &Path, rel: &str, body: &str) -> String {
+        fs::write(dir.join(rel), body).unwrap();
+        git_in(dir, &["add", rel]);
+        git_in(dir, &["commit", "-qm", rel]);
+        git_in(dir, &["rev-parse", "HEAD"])
+    }
+
+    fn insert_monorepo_skill(
+        store: &SkillStore,
+        id: &str,
+        url: &str,
+        subpath: Option<&str>,
+        revision: &str,
+    ) {
+        insert_git_skill(store, id, url);
+        store
+            .update_skill_source_metadata(id, Some(url), subpath, None, Some(revision))
+            .unwrap();
+    }
+
+    /// The reported bug, end to end through the real check: a commit that only
+    /// touches `skills/a` is an update for `a` and nothing else in that repo —
+    /// except a skill installed from the repository root, which still sees
+    /// every commit, exactly as before.
+    #[test]
+    fn a_monorepo_commit_flags_only_the_skill_it_touches() {
+        let repo = test_repo();
+        let (dir, url, first) = monorepo(&repo);
+        insert_monorepo_skill(&repo.store, "a", &url, Some("skills/a"), &first);
+        insert_monorepo_skill(&repo.store, "b", &url, Some("skills/b"), &first);
+        insert_monorepo_skill(&repo.store, "root", &url, None, &first);
+
+        let head = commit_file(&dir, "skills/a/SKILL.md", "---\nname: a\n---\nchanged\n");
+
+        let check = |id: &str| check_skill_update_internal(&repo.store, id, true, None).unwrap();
+        assert_eq!(check("a").update_status, "update_available");
+        assert_eq!(check("b").update_status, "up_to_date");
+        assert_eq!(check("root").update_status, "update_available");
+
+        // `b`'s directory is the same tree at the new head, so that head is now
+        // what it was installed from: the next check needs no fetch.
+        let b = repo.store.get_skill_by_id("b").unwrap().unwrap();
+        assert_eq!(b.source_revision.as_deref(), Some(head.as_str()));
+        assert_eq!(b.remote_revision.as_deref(), Some(head.as_str()));
+        let a = repo.store.get_skill_by_id("a").unwrap().unwrap();
+        assert_eq!(a.source_revision.as_deref(), Some(first.as_str()));
+
+        // A `.gitattributes` above the directory changes the bytes an update
+        // writes into it — here every line ending — while its tree stays put.
+        commit_file(&dir, ".gitattributes", "skills/b/** text eol=crlf\n");
+        assert_eq!(check("b").update_status, "update_available");
+        let b = repo.store.get_skill_by_id("b").unwrap().unwrap();
+        assert_eq!(b.source_revision.as_deref(), Some(head.as_str()));
+    }
+
+    /// An installed revision the server no longer has cannot be compared.
+    /// A successful head lookup does not establish an update for that subtree.
+    #[test]
+    fn an_unfetchable_installed_revision_records_a_failed_check() {
+        let repo = test_repo();
+        let (dir, url, _) = monorepo(&repo);
+        let gone = "0123456789abcdef0123456789abcdef01234567";
+        insert_monorepo_skill(&repo.store, "b", &url, Some("skills/b"), gone);
+        commit_file(&dir, "skills/a/SKILL.md", "---\nname: a\n---\nchanged\n");
+
+        let err = check_skill_update_internal(&repo.store, "b", true, None).unwrap_err();
+
+        let b = repo.store.get_skill_by_id("b").unwrap().unwrap();
+        assert_eq!(b.update_status, "error");
+        assert_eq!(b.last_check_error.as_deref(), Some(err.message.as_str()));
+        assert_eq!(b.source_revision.as_deref(), Some(gone));
+    }
+
+    /// "Check all" resolves each remote once. Its siblings — here installed at
+    /// different revisions — are answered from that one resolution.
+    #[test]
+    fn one_resolution_answers_every_sibling_of_a_remote() {
+        let repo = test_repo();
+        let (dir, url, first) = monorepo(&repo);
+        let second = commit_file(&dir, "SKILL.md", "---\nname: root\n---\nroot only\n");
+        commit_file(&dir, "skills/a/SKILL.md", "---\nname: a\n---\nchanged\n");
+
+        let key = remote(&url, None);
+        let installed: HashSet<(String, String)> = [
+            (first.clone(), "skills/a".to_string()),
+            (second.clone(), "skills/b".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let out = resolve_remotes_concurrent(HashMap::from([(key.clone(), installed)]), None);
+
+        assert_eq!(
+            out[&key].unchanged,
+            HashSet::from([(second, "skills/b".to_string())])
+        );
     }
 
     fn write_skill(dir: &Path, name: &str) {

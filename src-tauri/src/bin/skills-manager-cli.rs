@@ -1853,7 +1853,12 @@ fn run_check(
     let mut reports = Vec::new();
 
     for skill in targets {
-        if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
+        // Local and import skills are compared with their source folder, as the
+        // app does (#590). Website snapshots have nothing to compare against.
+        if !matches!(
+            skill.source_type.as_str(),
+            "git" | "skillssh" | "local" | "import"
+        ) {
             reports.push(CheckReport {
                 skill_id: skill.id.clone(),
                 name: skill.name.clone(),
@@ -1864,6 +1869,9 @@ fn run_check(
             });
             continue;
         }
+        // A local check only reads the disk, so the cache that spares remote
+        // round-trips must not answer for it.
+        let force = force || matches!(skill.source_type.as_str(), "local" | "import");
         let report =
             match cmd::check_skill_update_internal(store, &skill.id, force, proxy_url.as_deref()) {
                 Ok(dto) => CheckReport {
@@ -3647,5 +3655,73 @@ mod tests {
         assert_eq!(audit.len(), audit_count + 1);
         assert_eq!(audit[0].action, "deploy");
         assert_eq!(audit[0].skill_id.as_deref(), Some("skill-demo"));
+    }
+
+    /// `skills check` on a local skill used to answer `skipped: true` with
+    /// whatever status was stored, which reads as "checked, up to date" (#590).
+    #[test]
+    fn check_compares_a_local_skill_with_its_source_folder() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("skills.db")).unwrap();
+        let source = tmp.path().join("work/demo");
+        let central = tmp.path().join("central/demo");
+        for dir in [&source, &central] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        }
+        let hash = installer::hash_local_source(&source).unwrap();
+        let record = |id: &str, source_type: &str| SkillRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            source_type: source_type.to_string(),
+            source_ref: Some(source.to_string_lossy().to_string()),
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: central.with_file_name(id).to_string_lossy().to_string(),
+            content_hash: Some(hash.clone()),
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".to_string(),
+            update_status: "unknown".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        };
+        // As an install leaves it: checked a moment ago, nothing compared yet.
+        let mut installed = record("demo", "local");
+        installed.update_status = "local_only".to_string();
+        installed.last_checked_at = Some(chrono::Utc::now().timestamp_millis());
+        store.insert_skill(&installed).unwrap();
+        let check = || {
+            run_check(&store, Some("demo"), false, false)
+                .unwrap()
+                .remove(0)
+        };
+
+        let report = check();
+        assert!(!report.skipped);
+        assert_eq!(report.update_status, "up_to_date");
+
+        fs::write(source.join("SKILL.md"), "---\nname: demo\n---\nedited\n").unwrap();
+        assert_eq!(check().update_status, "update_available");
+
+        fs::remove_dir_all(&source).unwrap();
+        assert_eq!(check().update_status, "source_missing");
+
+        store.insert_skill(&record("imported", "import")).unwrap();
+        let report = run_check(&store, Some("imported"), false, false)
+            .unwrap()
+            .remove(0);
+        assert_eq!(report.update_status, "source_missing");
+
+        store.insert_skill(&record("site", "well-known")).unwrap();
+        let report = run_check(&store, Some("site"), false, true)
+            .unwrap()
+            .remove(0);
+        assert!(report.skipped);
     }
 }

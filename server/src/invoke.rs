@@ -254,7 +254,7 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
             }
             let a: A = args_to(args)?;
             ops::install_local_impl(store, &a.source_path, a.name.as_deref())
-                .map(serialize_null)
+                .map(serialize)
         }
         "batch_import_folder" => {
             #[derive(Deserialize)]
@@ -840,7 +840,7 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
                 central_repo_path_overridden: bool,
             }
             let info = DiagnosticInfo {
-                app_version: env!("CARGO_PKG_VERSION").to_string(),
+                app_version: app_version(),
                 os: std::env::consts::OS.to_string(),
                 os_version: "server".to_string(),
                 arch: std::env::consts::ARCH.to_string(),
@@ -993,6 +993,20 @@ fn serialize_null<T>(_unused: T) -> Value {
     Value::Null
 }
 
+/// The app version lives in the root package.json, which the release script
+/// bumps. The server crate's own version is unrelated.
+fn app_version() -> String {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            serde_json::from_str::<Value>(include_str!("../../package.json"))
+                .ok()
+                .and_then(|pkg| pkg["version"].as_str().map(str::to_string))
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+        })
+        .clone()
+}
+
 fn fetch_leaderboard_impl(
     store: &crate::core::skill_store::SkillStore,
     board: &str,
@@ -1011,7 +1025,7 @@ fn fetch_leaderboard_impl(
     let proxy_url = store.proxy_url();
     let board_type = LeaderboardType::from_str(board);
     let skills = skillssh_api::fetch_leaderboard(board_type, proxy_url.as_deref())
-        .map_err(crate::core::error::AppError::network)?;
+        .map_err(|e| crate::core::error::AppError::network(format!("{e:#}")))?;
 
     if let Ok(json) = serde_json::to_string(&skills) {
         store.set_cache(&cache_key, &json).ok();
@@ -1029,7 +1043,7 @@ fn search_skillssh_impl(
     let requested = limit.unwrap_or(60);
     let bounded = requested.clamp(1, 300);
     crate::core::skillssh_api::search_skills(query, bounded, proxy_url.as_deref())
-        .map_err(crate::core::error::AppError::network)
+        .map_err(|e| crate::core::error::AppError::network(format!("{e:#}")))
 }
 
 fn check_app_update_impl(

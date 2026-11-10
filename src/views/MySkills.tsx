@@ -21,6 +21,9 @@ import {
   GripVertical,
   CircleSlash,
   Circle,
+  ChevronDown,
+  ChevronRight,
+  FolderTree,
   Pencil,
   Share2,
   Tag,
@@ -53,6 +56,11 @@ import type {
 } from "../lib/tauri";
 import { getErrorMessage } from "../lib/error";
 import { normalizeSkillSearch, skillSearchMatches } from "../lib/skillSearch";
+import {
+  buildSourceGroups,
+  getSkillSourceInfo,
+  type SkillSourceGroup,
+} from "../lib/skillSource";
 import {
   DndContext,
   closestCenter,
@@ -135,6 +143,14 @@ function centralDirName(skill: ManagedSkill) {
   return skill.central_path.split(/[\\/]/).filter(Boolean).pop() || skill.name;
 }
 
+/**
+ * One row of the list: either a source header or a skill. Keeping them in one
+ * array lets the grouped and ungrouped views share the same render path.
+ */
+type SkillListRow =
+  | { kind: "group"; group: SkillSourceGroup; expanded: boolean }
+  | { kind: "skill"; skill: ManagedSkill };
+
 export function MySkills() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -151,9 +167,20 @@ export function MySkills() {
     projects,
     refreshProjects,
   } = useApp();
-  const [viewMode, setViewMode] = useSkillViewMode();
+  const [viewMode, setViewMode, groupBySource, setGroupBySource] = useSkillViewMode();
+  // Grouping is a view preference, so it persists; which groups are open is
+  // session state, because a group the user expanded once is not a statement
+  // about the next launch.
+  // Explicit open/closed choice per source. A source the user never touched
+  // keeps its default: a group of one starts open, since collapsing it by
+  // default would hide the only skill it holds without saving a row.
+  const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>({});
+  const [sourceSelection, setSourceSelection] = useState<Set<string>>(new Set());
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
   const [filterMode, setFilterMode] = useState<"all" | "enabled" | "available">("all");
-  const [sourceFilters, setSourceFilters] = useState<Set<string>>(new Set());
+  // Which channel (`source_type`) a skill came through — git, skills.sh, a
+  // site, a local install, an import. Distinct from the Source grouping below.
+  const [channelFilters, setChannelFilters] = useState<Set<string>>(new Set());
   const [tagFilters, setTagFilters] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
   // Tag management from the filter bar (#233): right-click a tag pill to
@@ -255,13 +282,15 @@ export function MySkills() {
   // that leaves one of them on is a lie.
   const hasActiveFilters =
     search.trim() !== "" ||
-    sourceFilters.size > 0 ||
+    channelFilters.size > 0 ||
     tagFilters.size > 0 ||
+    sourceSelection.size > 0 ||
     filterMode !== "all";
   const clearFilters = () => {
     setSearch("");
-    setSourceFilters(new Set());
+    setChannelFilters(new Set());
     setTagFilters(new Set());
+    setSourceSelection(new Set());
     setFilterMode("all");
   };
 
@@ -284,7 +313,7 @@ export function MySkills() {
     return displayNames;
   }, [skills]);
 
-  const filtered = useMemo(() => {
+  const { filtered, sourceCandidates, preSelectionSourceGroups } = useMemo(() => {
     const query = normalizeSkillSearch(search);
     const result = skills.filter((skill) => {
       const displayName = skillDisplayNames.get(skill.id) || skill.name;
@@ -296,7 +325,7 @@ export function MySkills() {
       ]);
       if (!matchesSearch) return false;
 
-      if (sourceFilters.size > 0 && !sourceFilters.has(skill.source_type)) return false;
+      if (channelFilters.size > 0 && !channelFilters.has(skill.source_type)) return false;
 
       if (tagFilters.size > 0) {
         const wantUntagged = tagFilters.has(UNTAGGED_FILTER);
@@ -329,8 +358,59 @@ export function MySkills() {
       });
     }
 
-    return result;
-  }, [skills, skillDisplayNames, search, sourceFilters, tagFilters, filterMode, viewedPreset, presetSkillOrder]);
+    // Candidates, and the grouping to reuse below, come from the result
+    // *before* the source selection is applied. Otherwise picking a source
+    // would remove the others from the menu the user needs in order to switch
+    // sources.
+    const groups = buildSourceGroups(result);
+    const candidates = groups.map(({ key, label, count }) => ({ key, label, count }));
+
+    if (sourceSelection.size === 0) {
+      return { filtered: result, sourceCandidates: candidates, preSelectionSourceGroups: groups };
+    }
+
+    return {
+      filtered: result.filter((skill) => sourceSelection.has(getSkillSourceInfo(skill).key)),
+      sourceCandidates: candidates,
+      preSelectionSourceGroups: groups,
+    };
+  }, [skills, skillDisplayNames, search, channelFilters, tagFilters, sourceSelection, filterMode, viewedPreset, presetSkillOrder]);
+
+  // Without a source selection the groups from above already describe
+  // `filtered`; only a narrowing selection forces a rebuild. That rebuild must
+  // keep the labels of the pre-selection groups: path labels are
+  // disambiguated against the other paths, so a group rebuilt from the
+  // survivors alone would read `skills` again instead of `a/skills`.
+  const sourceGroups = useMemo(() => {
+    if (!groupBySource) return null;
+    if (sourceSelection.size === 0) return preSelectionSourceGroups;
+    const labels = new Map(preSelectionSourceGroups.map((group) => [group.key, group.label]));
+    return buildSourceGroups(filtered).map((group) => {
+      const known = labels.get(group.key);
+      return known === undefined ? group : { ...group, label: known };
+    });
+  }, [groupBySource, sourceSelection.size, preSelectionSourceGroups, filtered]);
+
+  // A group opens on click, and stays open while the user is searching: a query
+  // that matched something inside a collapsed group would otherwise look like
+  // no match at all.
+  const searching = search.trim() !== "";
+  const sourceRows = useMemo<SkillListRow[]>(() => {
+    if (!sourceGroups) {
+      return filtered.map((skill) => ({ kind: "skill", skill }) as SkillListRow);
+    }
+    const rows: SkillListRow[] = [];
+    for (const group of sourceGroups) {
+      // Every source gets a header, including one that holds a single skill, so
+      // the grouped view reads the same way whatever the group's size.
+      const expanded = searching || (groupOpen[group.key] ?? group.skills.length === 1);
+      rows.push({ kind: "group", group, expanded });
+      if (expanded) {
+        for (const skill of group.skills) rows.push({ kind: "skill", skill });
+      }
+    }
+    return rows;
+  }, [filtered, sourceGroups, groupOpen, searching]);
 
   const {
     isMultiSelect, setIsMultiSelect,
@@ -342,13 +422,17 @@ export function MySkills() {
     exitMultiSelect,
   } = useMultiSelect({
     items: skills,
+    // Collapsing a group is a display choice, so the selection still covers the
+    // whole filtered list: select-all and bulk delete must not be bounded by
+    // which groups happen to be open.
     filtered,
     getKey: (s) => s.id,
     isItemActive: (s) => viewedPreset ? s.preset_ids.includes(viewedPreset.id) : true,
     filterSignal: JSON.stringify([
       search,
-      [...sourceFilters].sort(),
+      [...channelFilters].sort(),
       [...tagFilters].sort(),
+      [...sourceSelection].sort(),
       filterMode,
       viewedPreset?.id ?? null,
     ]),
@@ -393,7 +477,9 @@ export function MySkills() {
     [filtered, viewedPreset]
   );
 
-  const canDrag = !!viewedPreset;
+  // Grouped order is source order, not the preset's order, so dragging would
+  // move a skill to a position the user cannot see.
+  const canDrag = !!viewedPreset && !groupBySource;
 
   const refreshGitStatus = useCallback(async () => {
     try {
@@ -1212,6 +1298,18 @@ export function MySkills() {
             >
               <List className="h-4 w-4" />
             </button>
+            <button
+              onClick={() => setGroupBySource(!groupBySource)}
+              aria-pressed={groupBySource}
+              className={cn(
+                "rounded-md p-2 transition-colors outline-none",
+                groupBySource ? "bg-surface-active text-secondary" : "text-muted hover:text-tertiary"
+              )}
+              title={t("mySkills.groupBySource")}
+              aria-label={t("mySkills.groupBySource")}
+            >
+              <FolderTree className="h-4 w-4" />
+            </button>
 
             {/* Selection can stay active in either view. */}
             <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 self-center bg-border-subtle" />
@@ -1232,20 +1330,79 @@ export function MySkills() {
       </div>
 
       <div className="flex flex-wrap items-center gap-1 px-1 -mt-2 -mb-3">
-        {(["local", "import", "git", "skillssh"] as const).map((src) => (
+        {(["local", "import", "git", "skillssh"] as const).map((channel) => (
           <button
-            key={src}
-            onClick={() => setSourceFilters(toggleFilter(sourceFilters, src))}
+            key={channel}
+            onClick={() => setChannelFilters(toggleFilter(channelFilters, channel))}
             className={cn(
               "rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors",
-              sourceFilters.has(src)
+              channelFilters.has(channel)
                 ? "bg-accent text-white dark:bg-accent dark:text-white"
                 : "bg-surface-hover text-muted hover:text-secondary"
             )}
           >
-            {t(`mySkills.sourceFilter.${src}`)}
+            {t(`mySkills.sourceFilter.${channel}`)}
           </button>
         ))}
+        {/* Sources are picked from a menu, not rendered as pills: a library can
+            hold dozens of repos and directories. */}
+        <div className="relative">
+          <button
+            onClick={() => setSourceMenuOpen((open) => !open)}
+            aria-expanded={sourceMenuOpen}
+            disabled={sourceCandidates.length === 0}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors disabled:opacity-40",
+              sourceSelection.size > 0
+                ? "bg-accent text-white dark:bg-accent dark:text-white"
+                : "bg-surface-hover text-muted hover:text-secondary"
+            )}
+          >
+            <FolderTree className="h-3 w-3" />
+            {t("mySkills.sourcePicker.label")}
+            {sourceSelection.size > 0 && ` (${sourceSelection.size})`}
+          </button>
+          {sourceMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setSourceMenuOpen(false)} />
+              {/* overscroll-contain stops a wheel that reaches the end of the
+                  list from scrolling the page underneath it. */}
+              <div className="absolute left-0 top-full z-50 mt-1 max-h-72 w-64 overflow-y-auto overscroll-contain rounded-lg border border-border bg-surface py-1 shadow-2xl">
+                {sourceSelection.size > 0 && (
+                  <button
+                    onClick={() => setSourceSelection(new Set())}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-muted hover:bg-surface-hover hover:text-secondary"
+                  >
+                    <X className="h-3 w-3" />
+                    {t("mySkills.sourcePicker.clear")}
+                  </button>
+                )}
+                {sourceCandidates.map((candidate) => {
+                  const label = candidate.label || t("mySkills.sourcePicker.unknownSource");
+                  const checked = sourceSelection.has(candidate.key);
+                  return (
+                    <button
+                      key={candidate.key}
+                      onClick={() =>
+                        setSourceSelection((prev) => toggleFilter(prev, candidate.key))
+                      }
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-secondary hover:bg-surface-hover"
+                      title={label}
+                    >
+                      {checked ? (
+                        <SquareCheck className="h-3.5 w-3.5 shrink-0 text-accent" />
+                      ) : (
+                        <Square className="h-3.5 w-3.5 shrink-0 text-faint" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{label}</span>
+                      <span className="shrink-0 text-[11px] text-faint">{candidate.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
         {allTags.length > 0 && (
           <>
             <span className="mx-0.5 h-3 w-px bg-border-subtle" />
@@ -1385,7 +1542,35 @@ export function MySkills() {
                 : "flex flex-col gap-0.5"
             )}
           >
-          {filtered.map((skill) => {
+          {sourceRows.map((row) => {
+            if (row.kind === "group") {
+              const label = row.group.label || t("mySkills.sourcePicker.unknownSource");
+              return (
+                <button
+                  key={`group-${row.group.key}`}
+                  onClick={() =>
+                    setGroupOpen((prev) => ({ ...prev, [row.group.key]: !row.expanded }))
+                  }
+                  aria-expanded={row.expanded}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-1 py-1.5 text-left text-[12px] font-semibold text-muted transition-colors hover:bg-surface-hover hover:text-secondary",
+                    viewMode === "grid" && "col-span-full"
+                  )}
+                >
+                  {row.expanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0" />
+                  )}
+                  <span className="truncate">{label}</span>
+                  <span className="shrink-0 text-[11px] font-medium text-faint">
+                    {row.group.count}
+                  </span>
+                </button>
+              );
+            }
+
+            const skill = row.skill;
             const enabledInPreset = viewedPreset
               ? skill.preset_ids.includes(viewedPreset.id)
               : false;

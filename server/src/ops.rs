@@ -1094,6 +1094,16 @@ pub fn resync_copy_targets(store: &SkillStore, skill_id: &str) -> Result<(), App
         if target.mode != "copy" {
             continue;
         }
+        // An update that changed no content leaves the copies alone.
+        if scenario_service::recorded_target_is_current(
+            Some(&target),
+            &source,
+            Path::new(&target.target_path),
+            sync_engine::SyncMode::Copy,
+            skill.content_hash.as_deref(),
+        ) {
+            continue;
+        }
 
         sync_engine::sync_skill(
             &source,
@@ -1145,6 +1155,48 @@ impl RemoteKey {
 pub struct PrefetchedRemote {
     key: RemoteKey,
     result: Result<String, String>,
+    /// The `(source_revision, subpath)` pairs whose directory is the same tree
+    /// at the resolved revision — see [`git_fetcher::unchanged_subtrees`].
+    unchanged: HashSet<(String, String)>,
+    /// Why those directories could not be compared. A resolved head alone
+    /// does not establish whether an installed subtree changed.
+    comparison_error: Option<String>,
+}
+
+/// The directory a subpath skill was installed from, as `(revision, subpath)`.
+/// `None` for a skill installed from the repository root, which keeps comparing
+/// the whole repository's head.
+fn installed_subtree(skill: &SkillRecord, source: &GitSkillSource) -> Option<(String, String)> {
+    let subpath = source.subpath.as_deref().filter(|s| !s.is_empty())?;
+    Some((skill.source_revision.clone()?, subpath.to_string()))
+}
+
+/// Resolve `key`'s head, then which of `installed` it leaves unchanged.
+fn resolve_remote(
+    key: RemoteKey,
+    installed: &HashSet<(String, String)>,
+    proxy_url: Option<&str>,
+) -> PrefetchedRemote {
+    let resolve = || {
+        git_fetcher::resolve_remote_revision(&key.clone_url, key.branch.as_deref(), proxy_url)
+            .map_err(|err| err.to_string())
+    };
+    let result = resolve();
+    let (unchanged, comparison_error) = match &result {
+        Ok(head) => {
+            match git_fetcher::unchanged_subtrees(&key.clone_url, head, installed, proxy_url) {
+                Ok(unchanged) => (unchanged, None),
+                Err(err) => (HashSet::new(), Some(err.to_string())),
+            }
+        }
+        Err(_) => (HashSet::new(), None),
+    };
+    PrefetchedRemote {
+        key,
+        result,
+        unchanged,
+        comparison_error,
+    }
 }
 
 pub fn git_source_from_skill(skill: &SkillRecord) -> Result<GitSkillSource, AppError> {
@@ -1243,14 +1295,13 @@ pub fn prefetch_skill_remote(
     if should_skip_update_check(store, &skill, force).unwrap_or(false) {
         return None;
     }
-    let key = RemoteKey::from(git_source_from_skill(&skill).ok()?);
-    let result = git_fetcher::resolve_remote_revision(
-        &key.clone_url,
-        key.branch.as_deref(),
+    let source = git_source_from_skill(&skill).ok()?;
+    let installed = installed_subtree(&skill, &source).into_iter().collect();
+    Some(resolve_remote(
+        RemoteKey::from(source),
+        &installed,
         proxy_url,
-    )
-    .map_err(|err| err.to_string());
-    Some(PrefetchedRemote { key, result })
+    ))
 }
 
 pub fn check_skill_update_with_remote(
@@ -1287,16 +1338,51 @@ pub fn check_skill_update_with_remote(
                     .map_err(AppError::db)?;
             }
 
-            let Some(remote_result) = prefetched
-                .filter(|prefetched| prefetched.key.matches(&git_source))
-                .map(|prefetched| prefetched.result)
+            let Some(PrefetchedRemote {
+                result: remote_result,
+                unchanged,
+                comparison_error,
+                ..
+            }) = prefetched.filter(|prefetched| prefetched.key.matches(&git_source))
             else {
                 return managed_skill_by_id(store, skill_id);
             };
             match remote_result {
                 Ok(remote_revision) => {
+                    // The repo moved, and the comparison that answers for this
+                    // skill's directory failed (#582). That says nothing about
+                    // the skill, so it is not an update: record a failed check,
+                    // as for a head that could not be resolved, and let the
+                    // next round ask again.
+                    if let Some(message) = comparison_error.filter(|_| {
+                        skill.source_revision.as_deref() != Some(remote_revision.as_str())
+                            && installed_subtree(&skill, &git_source).is_some()
+                    }) {
+                        store
+                            .update_skill_check_state(
+                                &skill.id,
+                                Some(&remote_revision),
+                                "error",
+                                Some(&message),
+                            )
+                            .map_err(AppError::db)?;
+                        return Err(AppError::git(message));
+                    }
                     let update_status = match skill.source_revision.as_deref() {
                         Some(current) if current == remote_revision => "up_to_date",
+                        // The repo moved but this skill's directory did not
+                        // (#561). Record the new head as its source, as an
+                        // update that changed nothing would, so the next check
+                        // compares from there without fetching again.
+                        Some(_)
+                            if installed_subtree(&skill, &git_source)
+                                .is_some_and(|installed| unchanged.contains(&installed)) =>
+                        {
+                            store
+                                .update_skill_source_revision(&skill.id, &remote_revision)
+                                .map_err(AppError::db)?;
+                            "up_to_date"
+                        }
                         Some(_) => "update_available",
                         None => "unknown",
                     };
@@ -1389,7 +1475,7 @@ pub fn check_all_skill_updates_impl(
 ) -> Result<(), AppError> {
     let skills = store.get_all_skills().map_err(AppError::db)?;
 
-    let mut remotes: HashSet<RemoteKey> = HashSet::new();
+    let mut remotes: HashMap<RemoteKey, HashSet<(String, String)>> = HashMap::new();
     for skill in &skills {
         if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
             continue;
@@ -1404,25 +1490,25 @@ pub fn check_all_skill_updates_impl(
             ),
         }
         if let Ok(source) = git_source_from_skill(skill) {
-            remotes.insert(RemoteKey::from(source));
+            let installed = installed_subtree(skill, &source);
+            remotes
+                .entry(RemoteKey::from(source))
+                .or_default()
+                .extend(installed);
         }
     }
     let remote_revisions = if remotes.is_empty() {
         HashMap::new()
     } else {
-        resolve_remotes_concurrent(remotes.into_iter().collect(), proxy_url.clone())
+        resolve_remotes_concurrent(remotes, proxy_url.clone())
     };
 
     let mut failed = Vec::new();
     for skill in &skills {
         let prefetched = if matches!(skill.source_type.as_str(), "git" | "skillssh") {
-            git_source_from_skill(skill).ok().and_then(|source| {
-                let key = RemoteKey::from(source);
-                remote_revisions
-                    .get(&key)
-                    .cloned()
-                    .map(|result| PrefetchedRemote { key, result })
-            })
+            git_source_from_skill(skill)
+                .ok()
+                .and_then(|source| remote_revisions.get(&RemoteKey::from(source)).cloned())
         } else {
             None
         };
@@ -1453,12 +1539,23 @@ pub fn check_all_skill_updates_impl(
 }
 
 fn resolve_remotes_concurrent(
-    remotes: Vec<RemoteKey>,
+    remotes: HashMap<RemoteKey, HashSet<(String, String)>>,
     proxy_url: Option<String>,
-) -> HashMap<RemoteKey, Result<String, String>> {
+) -> HashMap<RemoteKey, PrefetchedRemote> {
+    resolve_concurrent(remotes.keys().cloned().collect(), |key| {
+        resolve_remote(key.clone(), &remotes[key], proxy_url.as_deref())
+    })
+}
+
+/// Run `resolve` over every remote concurrently (bounded by
+/// `MAX_CHECK_CONCURRENCY`) with work-stealing, and collect each result.
+fn resolve_concurrent<T, F>(remotes: Vec<RemoteKey>, resolve: F) -> HashMap<RemoteKey, T>
+where
+    T: Send,
+    F: Fn(&RemoteKey) -> T + Sync,
+{
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let results: Mutex<HashMap<RemoteKey, Result<String, String>>> =
-        Mutex::new(HashMap::with_capacity(remotes.len()));
+    let results: Mutex<HashMap<RemoteKey, T>> = Mutex::new(HashMap::with_capacity(remotes.len()));
     let worker_count = MAX_CHECK_CONCURRENCY.min(remotes.len().max(1));
 
     std::thread::scope(|scope| {
@@ -1467,12 +1564,7 @@ fn resolve_remotes_concurrent(
                 let idx = next.fetch_add(1, Ordering::Relaxed);
                 let Some(key) = remotes.get(idx) else { break };
 
-                let resolved = git_fetcher::resolve_remote_revision(
-                    &key.clone_url,
-                    key.branch.as_deref(),
-                    proxy_url.as_deref(),
-                )
-                .map_err(|err| err.to_string());
+                let resolved = resolve(key);
                 if let Ok(mut map) = results.lock() {
                     map.insert(key.clone(), resolved);
                 }
@@ -2307,11 +2399,17 @@ fn install_bundled_manage_skill(store: &SkillStore) -> Result<String, AppError> 
     store_installed_skill_unlocked(store, &result, &metadata, None)
 }
 
+#[derive(Debug, Serialize)]
+pub struct InstallLocalResult {
+    pub skill_id: String,
+    pub name: String,
+}
+
 pub fn install_local_impl(
     store: &SkillStore,
     source_path: &str,
     name: Option<&str>,
-) -> Result<(), AppError> {
+) -> Result<InstallLocalResult, AppError> {
     let path = PathBuf::from(source_path);
     let metadata = InstallSourceMetadata {
         source_type: "local".to_string(),
@@ -2329,7 +2427,7 @@ pub fn install_local_impl(
         store_installed_skill_unlocked(store, &result, &metadata, None)
             .map(|id| (id, result.name.clone()));
     log_install_outcome(store, "local", &outcome);
-    outcome.map(|_| ())
+    outcome.map(|(skill_id, name)| InstallLocalResult { skill_id, name })
 }
 
 #[derive(Debug, Serialize)]
