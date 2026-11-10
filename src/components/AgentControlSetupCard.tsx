@@ -12,8 +12,6 @@ const PROMPT_SETTING_KEY = "agent_control_setup_prompt";
 
 /** The library skill that teaches an agent to drive Skills Manager. */
 const SKILL_NAME = "manage-skills";
-const SKILL_SOURCE =
-  "https://github.com/anonymous99-Rise/skills-manager/tree/main/skills/manage-skills";
 
 /**
  * One-time pointer to a capability nothing else advertises: an agent can drive
@@ -71,14 +69,9 @@ export function AgentControlSetupCard() {
     if (busy || selected.length === 0) return;
     setBusy(true);
     try {
-      await api.installGit(SKILL_SOURCE);
-      const skills = await api.getManagedSkills();
-      const installed = skills.find((skill) => skill.name === SKILL_NAME);
-      if (!installed) {
-        throw new Error(t("agentControl.errorNotFound"));
-      }
+      const skillId = await api.installManageSkills();
       for (const key of selected) {
-        await api.syncSkillToTool(installed.id, key);
+        await api.syncSkillToTool(skillId, key);
       }
       toast.success(t("agentControl.done", { count: selected.length }));
       await api.setSettings(PROMPT_SETTING_KEY, "installed").catch(() => {});
@@ -87,7 +80,7 @@ export function AgentControlSetupCard() {
     } finally {
       // Also on failure: the skill may already be in the library with only
       // some agents deployed, and leaving the card up would send the user
-      // back through `installGit` on the next click.
+      // back through the setup on the next click.
       await refreshManagedSkills();
       setBusy(false);
     }

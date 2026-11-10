@@ -265,6 +265,7 @@ fn dispatch(store: &crate::core::skill_store::SkillStore, cmd: &str, args: &Valu
             let a: A = args_to(args)?;
             ops::batch_import_folder_impl(store, &a.folder_path).map(serialize)
         }
+        "install_manage_skills" => ops::install_manage_skills_impl(store).map(serialize),
         "install_git" => {
             #[derive(Deserialize)]
             struct A {

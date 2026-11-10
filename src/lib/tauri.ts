@@ -267,6 +267,9 @@ export const deleteManagedSkills = (skillIds: string[]) =>
 export const installLocal = (sourcePath: string, name?: string) =>
   invoke<void>("install_local", { sourcePath, name: name || null });
 
+export const installManageSkills = () =>
+  invoke<string>("install_manage_skills");
+
 export const installGit = (repoUrl: string, name?: string) =>
   invoke<void>("install_git", { repoUrl, name: name || null });
 

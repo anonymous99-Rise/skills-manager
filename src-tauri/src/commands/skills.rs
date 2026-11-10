@@ -882,6 +882,113 @@ fn log_reimport_outcome(
     store.log_audit(draft);
 }
 
+/// Where the one-click setup looks for the management skill, in order. The
+/// Gitea mirror covers networks that cannot reach GitHub.
+const MANAGE_SKILL_NAME: &str = "manage-skills";
+const MANAGE_SKILL_SUBPATH: &str = "skills/manage-skills";
+const MANAGE_SKILL_SOURCES: &[&str] = &[
+    "https://github.com/anonymous99-Rise/skills-manager.git",
+    "https://git.nxwysoft.com/zhangz/skills-manager.git",
+];
+
+/// Compiled into the binary, used only when every remote source fails.
+const BUNDLED_MANAGE_SKILLS: &str = include_str!("../../../skills/manage-skills/SKILL.md");
+
+/// Install the management skill, or return the existing record unchanged.
+/// GitHub is tried first, then the Gitea mirror, then the bundled copy.
+pub fn install_manage_skills_impl(store: &SkillStore) -> Result<String, AppError> {
+    if let Some(existing) = store
+        .get_all_skills()
+        .map_err(AppError::db)?
+        .into_iter()
+        .find(|skill| skill.name == MANAGE_SKILL_NAME)
+    {
+        return Ok(existing.id);
+    }
+
+    let mut failures = Vec::new();
+    for source in MANAGE_SKILL_SOURCES {
+        match install_manage_skill_from_git(store, source) {
+            Ok(id) => return Ok(id),
+            Err(error) => failures.push(format!("{source}: {error}")),
+        }
+    }
+
+    install_bundled_manage_skill(store).map_err(|error| {
+        AppError::io(format!(
+            "Could not install {MANAGE_SKILL_NAME} from any source. {}; bundled copy: {error}",
+            failures.join(" | ")
+        ))
+    })
+}
+
+fn install_manage_skill_from_git(store: &SkillStore, repo_url: &str) -> Result<String, AppError> {
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
+        repo_url,
+        None,
+        Some(MANAGE_SKILL_SUBPATH),
+        None,
+        store.proxy_url().as_deref(),
+        None,
+    )
+    .map_err(AppError::classify_git_error)?;
+
+    let outcome = (|| -> Result<String, AppError> {
+        let _lock =
+            RepoLock::acquire_foreground("install manage-skills").map_err(AppError::db)?;
+        let skill_dir = resolve_skill_dir(
+            &temp_dir,
+            Some(MANAGE_SKILL_SUBPATH),
+            Some(MANAGE_SKILL_NAME),
+        )?;
+        let revision = git_fetcher::get_head_revision(&temp_dir).map_err(AppError::git)?;
+        let result = installer::install_from_git_dir(&skill_dir, Some(MANAGE_SKILL_NAME))
+            .map_err(AppError::io)?;
+        let metadata = InstallSourceMetadata {
+            source_type: "git".to_string(),
+            source_ref: Some(repo_url.to_string()),
+            source_ref_resolved: Some(repo_url.to_string()),
+            source_subpath: Some(MANAGE_SKILL_SUBPATH.to_string()),
+            source_branch: None,
+            source_revision: Some(revision.clone()),
+            remote_revision: Some(revision),
+            update_status: "up_to_date".to_string(),
+        };
+        store_installed_skill_unlocked(store, &result, &metadata, None)
+    })();
+
+    git_fetcher::cleanup_temp(&temp_dir);
+    outcome
+}
+
+fn install_bundled_manage_skill(store: &SkillStore) -> Result<String, AppError> {
+    let temp_dir = tempfile::tempdir().map_err(AppError::io)?;
+    std::fs::write(temp_dir.path().join("SKILL.md"), BUNDLED_MANAGE_SKILLS)
+        .map_err(AppError::io)?;
+    let metadata = InstallSourceMetadata {
+        source_type: "bundled".to_string(),
+        source_ref: Some(format!("bundled:{MANAGE_SKILL_NAME}")),
+        source_ref_resolved: None,
+        source_subpath: None,
+        source_branch: None,
+        source_revision: None,
+        remote_revision: None,
+        update_status: "local_only".to_string(),
+    };
+    let _lock = RepoLock::acquire_foreground("install bundled skill").map_err(AppError::db)?;
+    let result = installer::install_from_local(temp_dir.path(), Some(MANAGE_SKILL_NAME))
+        .map_err(AppError::io)?;
+    store_installed_skill_unlocked(store, &result, &metadata, None)
+}
+
+#[tauri::command]
+pub async fn install_manage_skills(
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<String, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || install_manage_skills_impl(&store)).await?
+}
+
 #[tauri::command]
 pub async fn install_local(
     source_path: String,
