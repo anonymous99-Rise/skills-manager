@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > maintained for internal use with Gitea integration and a headless web server.
 > Changelog entries up to and including 1.43.4 describe the upstream releases.
 
+## [1.43.5] - 2026-11-11
+
+### Release Overview
+- The app now follows the system appearance by default. This release also fixes the Agent setup button in the dashboard, makes the release workflow work from a branch dispatch, and brings the headless server in line with upstream 1.43.4.
+
+### User-facing
+- **The app follows the system appearance by default** — A fresh install no longer starts in a fixed theme; it tracks the operating system's light/dark setting until you pick one explicitly. Thanks to @xingkongliang (#652).
+- **"Let your agents manage skills" now works when GitHub is unreachable** — Installing the `manage-skills` helper tried GitHub only and failed after a 21-second timeout, so the button appeared to do nothing. It now falls back to the Gitea mirror, then to a bundled copy.
+
+### Developer & Governance
+- **The release workflow can run from a branch** — A manual dispatch on `main` treated `main` as the tag and failed the version check. The workflow now resolves the release tag from `tauri.conf.json` for manual runs and keeps the tag/version check for tag pushes, then publishes the same way in both cases.
+- **Local releases work with Windows line endings** — `release:prepare` matches version lines with LF-only patterns and failed on a CRLF checkout; it now normalises line endings before editing `Cargo.toml` and `Cargo.lock`.
+- **Headless server synced with upstream 1.43.4** — Ported the subtree-aware update checks, preset tool-toggle helper, tool path migration handling, and the `install_local` result shape; diagnostics now report the app version from `package.json`.
+
 ## [1.43.4] - 2026-11-10
 
 ### Release Overview

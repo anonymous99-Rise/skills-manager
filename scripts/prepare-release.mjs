@@ -27,6 +27,12 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+// Windows checkouts use CRLF (core.autocrlf), but the version patterns below
+// are written for LF. Normalise so a local release works on either platform.
+function readText(filePath) {
+  return fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n');
+}
+
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -112,10 +118,10 @@ function ensureChangelogEntry(changelog, nextVersion, { zh = false } = {}) {
 function main() {
   const pkg = readJson(packagePath);
   const tauriConf = readJson(tauriConfPath);
-  const cargoToml = fs.readFileSync(cargoTomlPath, 'utf8');
-  const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
-  const changelog = fs.readFileSync(changelogPath, 'utf8');
-  const changelogZh = fs.readFileSync(changelogZhPath, 'utf8');
+  const cargoToml = readText(cargoTomlPath);
+  const cargoLock = readText(cargoLockPath);
+  const changelog = readText(changelogPath);
+  const changelogZh = readText(changelogZhPath);
 
   const currentVersion = pkg.version;
   const nextVersion = bumpVersion(currentVersion, releaseArg);
